@@ -45,17 +45,17 @@ public class RibbonDriver
 
     public void Register(CommandRouter router)
     {
-        router.Register("ribbon", HandleRibbon);
-        router.Register("ribbon.tabs", HandleRibbon);                  // alias
-        router.Register("ribbon.buttons", HandleRibbonButtons);         // tab-scoped; no tab = all tabs
-        router.Register("ribbon.buttons.all", HandleRibbonButtonsAll);  // explicit all-tabs
-        router.Register("ribbon.activate", HandleRibbonActivate);
-        router.Register("ribbon.tab.activate", HandleRibbonActivate);   // alias (requested by CellVault session)
-        router.Register("ribbon.click", HandleRibbonClick);
-        router.Register("dialog.read", HandleDialogRead);
-        router.Register("dialog.click", HandleDialogClick);
-        router.Register("dialog.dismiss", HandleDialogDismiss);
-        router.Register("ui.tree", HandleUiTree);
+        router.RegisterNoSta("ribbon", HandleRibbon);
+        router.RegisterNoSta("ribbon.tabs", HandleRibbon);                  // alias
+        router.RegisterNoSta("ribbon.buttons", HandleRibbonButtons);         // tab-scoped; no tab = all tabs
+        router.RegisterNoSta("ribbon.buttons.all", HandleRibbonButtonsAll);  // explicit all-tabs
+        router.RegisterNoSta("ribbon.activate", HandleRibbonActivate);
+        router.RegisterNoSta("ribbon.tab.activate", HandleRibbonActivate);   // alias (requested by CellVault session)
+        router.RegisterNoSta("ribbon.click", HandleRibbonClick);
+        router.RegisterNoSta("dialog.read", HandleDialogRead);
+        router.RegisterNoSta("dialog.click", HandleDialogClick);
+        router.RegisterNoSta("dialog.dismiss", HandleDialogDismiss);
+        router.RegisterNoSta("ui.tree", HandleUiTree);
     }
 
     // ── Attach ───────────────────────────────────────────────────────

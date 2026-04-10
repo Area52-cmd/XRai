@@ -53,6 +53,7 @@
     <ProjectReference Include="..\XRai.HooksClient\XRai.HooksClient.csproj" />
     <ProjectReference Include="..\XRai.UI\XRai.UI.csproj" />
     <ProjectReference Include="..\XRai.Vision\XRai.Vision.csproj" />
+    <ProjectReference Include="..\XRai.Studio\XRai.Studio.csproj" />
   </ItemGroup>
 
 </Project>

@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Automation;
@@ -45,9 +46,22 @@ using DatePicker = System.Windows.Controls.DatePicker;
 
 namespace XRai.Hooks;
 
-public class ControlAdapter : IControlAdapter
+public class ControlAdapter : IControlAdapter, IDisposable
 {
+    /// <summary>
+    /// In-process hook fired whenever a watched property on any exposed
+    /// control changes (Text, IsEnabled, Visibility, IsChecked, SelectedValue).
+    /// Args: (controlName, propertyName, newValueJson). XRai.Studio subscribes
+    /// to stream live control state to the dashboard. Zero-cost no-op if
+    /// nothing is subscribed.
+    ///
+    /// Subscribers run on the WPF UI thread — keep them fast and non-blocking.
+    /// </summary>
+    public static event Action<string, string, object?>? OnControlChanged;
+
     private readonly FrameworkElement _element;
+    private readonly List<Action> _unsubscribers = new();
+    private bool _disposed;
 
     public string Name => _element.Name;
     public string Type { get; }
@@ -100,6 +114,69 @@ public class ControlAdapter : IControlAdapter
             ScrollViewer => "ScrollViewer",
             _ => element.GetType().Name,
         };
+
+        // Wire up live-state watchers on the most-relevant dependency
+        // properties. DependencyPropertyDescriptor.AddValueChanged gives us
+        // change notifications even when there's no data binding. Only fires
+        // when the value actually changes, so subscribers don't get spammed.
+        SubscribeValueChange(UIElement.IsEnabledProperty, typeof(UIElement), "IsEnabled", () => _element.IsEnabled);
+        SubscribeValueChange(UIElement.VisibilityProperty, typeof(UIElement), "Visibility", () => _element.Visibility.ToString());
+        switch (element)
+        {
+            case TextBox tb:
+                SubscribeValueChange(TextBox.TextProperty, typeof(TextBox), "Text", () => tb.Text);
+                break;
+            case CheckBox cb:
+                SubscribeValueChange(ToggleButton.IsCheckedProperty, typeof(ToggleButton), "IsChecked", () => cb.IsChecked);
+                break;
+            case ToggleButton tgl:
+                SubscribeValueChange(ToggleButton.IsCheckedProperty, typeof(ToggleButton), "IsChecked", () => tgl.IsChecked);
+                break;
+            case Slider sl:
+                SubscribeValueChange(Slider.ValueProperty, typeof(Slider), "Value", () => sl.Value);
+                break;
+            case ProgressBar pb:
+                SubscribeValueChange(ProgressBar.ValueProperty, typeof(ProgressBar), "Value", () => pb.Value);
+                break;
+            case Selector sel:
+                SubscribeValueChange(Selector.SelectedIndexProperty, typeof(Selector), "SelectedIndex", () => sel.SelectedIndex);
+                break;
+        }
+    }
+
+    private void SubscribeValueChange(System.Windows.DependencyProperty dp, Type owner, string propName, Func<object?> read)
+    {
+        try
+        {
+            var dpd = DependencyPropertyDescriptor.FromProperty(dp, owner);
+            if (dpd == null) return;
+
+            EventHandler handler = (s, e) =>
+            {
+                if (_disposed) return;
+                object? newVal;
+                try { newVal = read(); } catch { newVal = null; }
+                try { OnControlChanged?.Invoke(_element.Name ?? "", propName, newVal); }
+                catch { /* subscriber threw — swallow */ }
+            };
+            dpd.AddValueChanged(_element, handler);
+            _unsubscribers.Add(() =>
+            {
+                try { dpd.RemoveValueChanged(_element, handler); } catch { }
+            });
+        }
+        catch { /* reflection / DPD failure — skip silently */ }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        foreach (var u in _unsubscribers)
+        {
+            try { u(); } catch { }
+        }
+        _unsubscribers.Clear();
     }
 
     public string? GetValue()

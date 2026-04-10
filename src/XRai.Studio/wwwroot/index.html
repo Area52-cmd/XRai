@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>XRai Studio</title>
+<link rel="stylesheet" href="/studio.css">
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">
+      <span class="logo">✦</span>
+      <span class="name">XRai Studio</span>
+    </div>
+    <div class="status" id="status-chip">
+      <span class="dot" id="attach-dot"></span>
+      <span id="attach-text">connecting…</span>
+    </div>
+    <div class="status" id="build-chip">
+      <span id="build-text">build —</span>
+    </div>
+    <div class="status" id="subs-chip">
+      <span id="subs-text">— events</span>
+    </div>
+    <div class="spacer"></div>
+    <button id="btn-pause" class="btn" title="Pause capture stream (Space)">⏸ Pause</button>
+    <button id="btn-record" class="btn" title="Start session recording (future)">⏺ Record</button>
+  </header>
+
+  <main id="grid">
+    <section id="panel-screenshot" class="panel">
+      <div class="panel-header">Live Excel</div>
+      <div class="panel-body">
+        <div id="screenshot-stage">
+          <img id="screenshot-img" alt="Waiting for frames…">
+          <div id="screenshot-empty" class="empty-hint">
+            No frames yet. Ensure Excel is open and attached via <code>{"cmd":"connect"}</code>.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-files" class="panel">
+      <div class="panel-header">Project files</div>
+      <div class="panel-body">
+        <ul id="files-list" class="scroll-list"></ul>
+        <div id="files-empty" class="empty-hint">No file events yet.</div>
+      </div>
+    </section>
+
+    <section id="panel-model" class="panel">
+      <div class="panel-header">ViewModel</div>
+      <div class="panel-body">
+        <table id="model-table" class="kv-table">
+          <tbody></tbody>
+        </table>
+        <div id="model-empty" class="empty-hint">Waiting for <code>model.exposed</code>…</div>
+      </div>
+    </section>
+
+    <section id="panel-commands" class="panel">
+      <div class="panel-header">Command stream</div>
+      <div class="panel-body">
+        <ol id="commands-list" class="scroll-list" reversed></ol>
+        <div id="commands-empty" class="empty-hint">No commands dispatched yet.</div>
+      </div>
+    </section>
+
+    <section id="panel-build" class="panel">
+      <div class="panel-header">Build console</div>
+      <div class="panel-body">
+        <ul id="build-list" class="scroll-list"></ul>
+        <div id="build-empty" class="empty-hint">No rebuild in flight. Run <code>{"cmd":"rebuild"}</code>.</div>
+      </div>
+    </section>
+  </main>
+
+  <footer id="timeline">
+    <div class="timeline-label" id="timeline-cursor">LIVE</div>
+    <div class="timeline-track" id="timeline-track"></div>
+    <div class="timeline-hint">Timeline scrubber — Phase 2</div>
+  </footer>
+
+  <script type="module" src="/studio.js"></script>
+</body>
+</html>

@@ -41,6 +41,9 @@ class Program
                 case "--daemon" or "daemon":
                     // Run as the long-lived daemon process
                     return new DaemonServer().Run();
+                case "--studio" or "studio":
+                    // Run as daemon with the Studio web dashboard enabled
+                    return new DaemonServer { StudioEnabled = true }.Run();
                 case "daemon-status":
                     return DaemonStatus();
                 case "daemon-stop":
@@ -85,6 +88,32 @@ class Program
 
         var session = new ExcelSession();
         var hookConnection = new HookConnection();
+
+        // Auto-recover the STA thread when it gets stuck, before the user has
+        // to run {"cmd":"sta.reset"} by hand. The router invokes this callback
+        // on TimeoutException and retries the command once against the fresh
+        // thread if we return true.
+        router.StaAutoRecover = () =>
+        {
+            try
+            {
+                // Detach session + hooks — the old COM references are bound
+                // to the dead apartment and will be invalid after recycle.
+                try { session.Detach(); } catch { }
+                try { hookConnection.Disconnect(); } catch { }
+                staWorker.Reset();
+
+                // Best-effort reattach so the retried command has something
+                // to work with. Failures here are swallowed — the retry will
+                // surface its own clearer error.
+                try { session.Attach(); } catch { }
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        };
 
         // Forward-declare drivers so `connect` / `sta.reset` handlers can
         // reference them in their closures (actual instantiation happens

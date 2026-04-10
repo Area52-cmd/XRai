@@ -66,11 +66,34 @@ public static class Pilot
         // Capture the WPF dispatcher from the element's thread
         _server?.SetDispatcher(element.Dispatcher);
 
+        // Clear the old registry (and dispose its adapters' value-change
+        // subscriptions) before walking the new visual tree. Prevents stale
+        // ControlAdapter instances from holding references to a disposed tree.
+        _controls.Clear();
         _controls.RootElement = element;
         ControlDiscovery.Walk(element, _controls);
         _lastExposeAt = DateTime.UtcNow;
         _totalExposeCalls++;
         Debug.WriteLine($"XRai: Exposed {_controls.Count} controls from {element.GetType().Name}");
+
+        // Emit a pane.exposed event so Studio sees the initial state — this
+        // is the primary trigger for the dashboard to render the control tree.
+        try
+        {
+            _server?.PushEvent("pane.exposed", new
+            {
+                rootType = element.GetType().Name,
+                controlCount = _controls.Count,
+                controls = _controls.All.Select(kvp => new
+                {
+                    name = kvp.Key,
+                    type = kvp.Value.Type,
+                    enabled = kvp.Value.IsEnabled,
+                    visible = kvp.Value.IsVisible,
+                }).ToArray(),
+            });
+        }
+        catch (Exception ex) { Debug.WriteLine($"pane.exposed emit failed: {ex.Message}"); }
     }
 
     /// <summary>
@@ -80,10 +103,29 @@ public static class Pilot
     public static void Expose(System.Windows.Forms.Control control)
     {
         if (control == null) throw new ArgumentNullException(nameof(control));
+        _controls.Clear();
         WinFormsDiscovery.Walk(control, _controls);
         _lastExposeAt = DateTime.UtcNow;
         _totalExposeCalls++;
         Debug.WriteLine($"XRai: Exposed {_controls.Count} controls from WinForms {control.GetType().Name}");
+
+        try
+        {
+            _server?.PushEvent("pane.exposed", new
+            {
+                rootType = control.GetType().Name,
+                controlCount = _controls.Count,
+                framework = "WinForms",
+                controls = _controls.All.Select(kvp => new
+                {
+                    name = kvp.Key,
+                    type = kvp.Value.Type,
+                    enabled = kvp.Value.IsEnabled,
+                    visible = kvp.Value.IsVisible,
+                }).ToArray(),
+            });
+        }
+        catch (Exception ex) { Debug.WriteLine($"pane.exposed emit failed: {ex.Message}"); }
     }
 
     /// <summary>
@@ -109,6 +151,21 @@ public static class Pilot
         _lastExposeModelAt = DateTime.UtcNow;
         _totalExposeModelCalls++;
         Debug.WriteLine($"XRai: Exposed model {key}");
+
+        // Snapshot the initial property dictionary and fire model.exposed
+        // so Studio can render the ViewModel inspector immediately.
+        try
+        {
+            var adapter = _models.Default;
+            var initialProps = adapter?.GetAll() ?? new Dictionary<string, object?>();
+            _server?.PushEvent("model.exposed", new
+            {
+                name = key,
+                modelType = viewModel.GetType().Name,
+                properties = initialProps,
+            });
+        }
+        catch (Exception ex) { Debug.WriteLine($"model.exposed emit failed: {ex.Message}"); }
     }
 
     /// <summary>

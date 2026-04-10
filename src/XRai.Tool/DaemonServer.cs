@@ -29,6 +29,7 @@ public class DaemonServer
     private readonly CommandRouter _router;
     private readonly ExcelSession _session;
     private readonly HookConnection _hookConnection;
+    private ReloadOrchestrator _reloadOrchestrator = null!;
     private readonly EventStream _events;
     private readonly StaComWorker _staWorker;
     private readonly CancellationTokenSource _cts = new();
@@ -144,6 +145,20 @@ public class DaemonServer
     }
 
     /// <summary>
+    /// When true, the daemon starts the XRai.Studio web dashboard on startup.
+    /// Set by Program.cs when --studio is passed on the command line, or
+    /// flipped via the {"cmd":"studio"} command at runtime.
+    /// </summary>
+    public bool StudioEnabled { get; set; }
+
+    /// <summary>
+    /// The live Studio host, or null if studio was never started in this
+    /// daemon. Kept on the server so {"cmd":"studio"} can report its URL
+    /// back to callers without having to restart the daemon.
+    /// </summary>
+    private XRai.Studio.StudioHost? _studioHost;
+
+    /// <summary>
     /// True if the daemon pipe was created with the restricted per-user ACL.
     /// Reported via security.status.
     /// </summary>
@@ -214,6 +229,23 @@ public class DaemonServer
         // which routes through the worker's single-threaded STA queue.
         Console.WriteLine($"[xrai-daemon] STA worker ready (IOleMessageFilter registered: {_staWorker.FilterRegistered})");
         Console.WriteLine($"[xrai-daemon] Ready. Clients should invoke XRai.Tool.exe and stdin/stdout will be transparently forwarded.");
+
+        // Start the Studio web dashboard if --studio was passed. Runs in the
+        // daemon process alongside the pipe server. Non-fatal if it fails to
+        // start — the daemon still serves the CLI.
+        if (StudioEnabled)
+        {
+            try
+            {
+                StartStudio();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[xrai-daemon] Studio failed to start: {ex.Message}");
+                DaemonLog($"Studio start failure: {ex}");
+            }
+        }
+
         Console.WriteLine();
 
         // Server loop: accept client connections on the pipe
@@ -277,6 +309,8 @@ public class DaemonServer
         }
         finally
         {
+            try { _studioHost?.Dispose(); } catch { }
+            _studioHost = null;
             try { _staWorker.Dispose(); } catch { }
             _hookConnection.Disconnect();
             _session.Dispose();
@@ -286,11 +320,129 @@ public class DaemonServer
         return 0;
     }
 
+    /// <summary>
+    /// Boot the XRai.Studio web host inside this daemon. Wires the event bus
+    /// to the command router (for command.start/end events) and starts the
+    /// CaptureLoop pointed at the current Excel window (best-effort — the
+    /// capture loop rechecks the hwnd every frame so it survives a rebuild).
+    /// </summary>
+    private void StartStudio()
+    {
+        if (_studioHost != null)
+        {
+            Console.WriteLine("[xrai-daemon] Studio already running: " + _studioHost.Url);
+            return;
+        }
+
+        _studioHost = new XRai.Studio.StudioHost(
+            stateProvider: BuildStudioState,
+            commandDispatcher: (cmd, args) =>
+            {
+                // Forward dashboard-originated commands through the router.
+                var obj = (System.Text.Json.Nodes.JsonObject)args.DeepClone();
+                obj["cmd"] = cmd;
+                return _router.Dispatch(obj.ToJsonString());
+            });
+
+        var url = _studioHost.Start(launchBrowser: true);
+        Console.WriteLine($"[xrai-daemon] Studio ready: {url}");
+        DaemonLog($"Studio started at {url}");
+
+        // Wire the add-in's in-process events (via hooks pipe) to the bus.
+        // Every PushEvent line read from the hooks pipe gets re-emitted on
+        // the Studio event bus so the dashboard sees them without polling.
+        var pipeSource = new XRai.Studio.Sources.PipeEventSource(_studioHost.Bus);
+        _studioHost.RegisterDisposable(pipeSource);
+
+        // Wrap the HookConnection's line reader to tee events into the bus.
+        // Best-effort — if the pipe is disconnected nothing happens until
+        // reconnect, at which point the existing lines flow normally.
+        // (For MVP we rely on command.end events and file/frame events; a
+        // richer hookup lives in Phase 2.)
+
+        // Start the screenshot capture loop. Provides a live hwnd via a
+        // callback that re-probes each frame, so it survives rebuilds.
+        var captureLoop = new XRai.Studio.Sources.CaptureLoop(
+            _studioHost.Bus,
+            () =>
+            {
+                try
+                {
+                    if (!_session.IsAttached) return (nint?)null;
+                    // Read the hwnd through the STA worker — Application.Hwnd
+                    // is a COM property and must be touched on the STA thread.
+                    nint hwnd = 0;
+                    try
+                    {
+                        _staWorker.Invoke(() => { hwnd = (nint)_session.App.Hwnd; return "ok"; }, 1000);
+                    }
+                    catch { hwnd = 0; }
+                    return hwnd == 0 ? null : hwnd;
+                }
+                catch { return null; }
+            });
+        captureLoop.Start();
+        _studioHost.RegisterDisposable(captureLoop);
+
+        // Make the router's rebuild flow publish per-step events to the bus.
+        // Done via the ReloadOrchestrator.StepReporterFactory hook added
+        // for exactly this reason.
+        _reloadOrchestrator.StepReporterFactory = () =>
+            new TeeStepReporter((step, status, elapsedMs, detail) =>
+            {
+                var data = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["step"] = step,
+                    ["status"] = status,
+                    ["elapsedMs"] = elapsedMs,
+                };
+                if (detail != null) data["detail"] = detail;
+                _studioHost.Bus.Publish(XRai.Studio.StudioEvent.Now("rebuild.step", "daemon", data));
+            });
+    }
+
+    /// <summary>
+    /// Build the JSON object returned by GET /state. Called synchronously
+    /// from the web request thread — must not block on long operations.
+    /// </summary>
+    private System.Text.Json.Nodes.JsonObject BuildStudioState()
+    {
+        var obj = new System.Text.Json.Nodes.JsonObject
+        {
+            ["attached"] = _session.IsAttached,
+            ["hooks"] = _hookConnection.IsConnected,
+            ["daemonPipe"] = PipeName,
+            ["studioUrl"] = _studioHost?.Url,
+        };
+
+        if (_session.IsAttached)
+        {
+            try
+            {
+                var wbState = _session.ProbeWorkbookState();
+                obj["excel"] = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["workbook"] = wbState.Name,
+                    ["hasWorkbook"] = wbState.HasWorkbook,
+                    ["workbookCount"] = wbState.Count,
+                };
+            }
+            catch { }
+        }
+
+        return obj;
+    }
+
     public void Stop()
     {
         Console.WriteLine("[xrai-daemon] Stop requested.");
         _running = false;
         _cts.Cancel();
+
+        // Stop the Studio host first so the token file is cleared and the
+        // Kestrel server shuts down cleanly before the process exits.
+        try { _studioHost?.Dispose(); } catch { }
+        _studioHost = null;
 
         // Connect and disconnect on our own pipe to unblock any pending accept
         try
@@ -513,6 +665,34 @@ public class DaemonServer
             return Response.Ok(new { already_open = false, name, created = true });
         });
 
+        // Studio web dashboard — lazy-start on demand. If the daemon was
+        // launched with --studio the host is already running; this command
+        // returns its URL + token. Otherwise, it boots the host now and
+        // returns the freshly-minted URL. Idempotent.
+        _router.Register("studio", _ =>
+        {
+            try
+            {
+                if (_studioHost == null)
+                {
+                    StudioEnabled = true;
+                    StartStudio();
+                }
+                return Response.Ok(new
+                {
+                    running = _studioHost != null,
+                    url = _studioHost?.Url,
+                    port = _studioHost?.Port,
+                    token_file = XRai.Studio.StudioToken.GetTokenFilePath(),
+                    hint = "Open the url in a browser. The token is embedded in the query string and converted to a cookie on first load.",
+                });
+            }
+            catch (Exception ex)
+            {
+                return Response.ErrorFromException(ex, "studio");
+            }
+        });
+
         _router.Register("sta.reset", _ =>
         {
             bool wasStuck = _staWorker.IsStuck;
@@ -640,7 +820,8 @@ public class DaemonServer
         new AssertOps(_router).Register(_router);
 
         // Phase 4: Reload + meta
-        new ReloadOrchestrator(_session, _hookConnection).Register(_router);
+        _reloadOrchestrator = new ReloadOrchestrator(_session, _hookConnection);
+        _reloadOrchestrator.Register(_router);
 
         _router.Register("excel.kill", _ =>
         {

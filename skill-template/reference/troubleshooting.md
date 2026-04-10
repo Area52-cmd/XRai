@@ -65,7 +65,7 @@ Safe-button priority: `Don't Update` > `No` > `Close` > `Cancel` > `OK` > `Yes` 
 
 ## Version hygiene
 
-Use `Version="1.0.*"` in your `.csproj` PackageReference for XRai.Hooks. The `rebuild` command handles NuGet cache clearing, restore, and version resolution automatically. If `connect` returns `hooks_stale: true`, the loaded hooks DLL is outdated — rebuild the add-in.
+Use `Version="1.0.0-*"` in your `.csproj` PackageReference for XRai.Hooks. The `rebuild` command handles NuGet cache clearing, restore, and version resolution automatically. If `connect` returns `hooks_stale: true`, the loaded hooks DLL is outdated — rebuild the add-in.
 
 ## Daemon mode
 

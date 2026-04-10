@@ -13,7 +13,15 @@ public class ModelRegistry
 
     public void Register(INotifyPropertyChanged model, string name)
     {
-        _models[name] = new ModelAdapter(model);
+        // Dispose the previous adapter (if any) so its PropertyChanged
+        // subscription is released. Prevents a slow leak on repeat ExposeModel.
+        if (_models.TryGetValue(name, out var existing))
+        {
+            try { existing.Dispose(); } catch { }
+        }
+        var adapter = new ModelAdapter(model);
+        adapter.SetName(name);
+        _models[name] = adapter;
     }
 
     /// <summary>
@@ -23,7 +31,15 @@ public class ModelRegistry
     /// </summary>
     public void SetDefault(INotifyPropertyChanged model)
     {
-        _default = new ModelAdapter(model);
+        // Dispose the previous default adapter if it was a distinct instance
+        // (avoid double-dispose if it's also in _models).
+        if (_default != null && !_models.ContainsValue(_default))
+        {
+            try { _default.Dispose(); } catch { }
+        }
+        var adapter = new ModelAdapter(model);
+        adapter.SetName("default");
+        _default = adapter;
     }
 
     public bool TryGet(string name, out ModelAdapter adapter)

@@ -10,6 +10,15 @@ public class ReloadOrchestrator
     private readonly Com.ExcelSession _session;
     private readonly HookConnection _hooks;
 
+    /// <summary>
+    /// Optional factory for a step reporter — called at the start of each
+    /// rebuild. When Studio is enabled, DaemonServer sets this to a factory
+    /// that returns a TeeStepReporter publishing to the event bus in addition
+    /// to the in-memory list. Default (null) means ReloadOrchestrator uses a
+    /// plain ListStepReporter and the behavior matches the pre-Studio era.
+    /// </summary>
+    public Func<IStepReporter>? StepReporterFactory { get; set; }
+
     public ReloadOrchestrator(Com.ExcelSession session, HookConnection hooks)
     {
         _session = session;
@@ -39,11 +48,28 @@ public class ReloadOrchestrator
 
         var xllOverride = args["xll"]?.GetValue<string>();
         var config = args["config"]?.GetValue<string>() ?? "Debug";
-        var steps = new List<string>();
+
+        // Use the injected reporter factory when Studio is active; otherwise
+        // fall back to the plain list reporter that matches the pre-Studio
+        // behavior exactly. This keeps the rebuild response shape unchanged.
+        var reporter = (StepReporterFactory ?? (() => (IStepReporter)new ListStepReporter()))();
+        var stepSw = Stopwatch.StartNew();
+
+        // Local helper: report a step with elapsed time since the last Step()
+        // call, then restart the per-step stopwatch. Mirrors the old free-form
+        // steps.Add() API while giving Studio per-step timing for the dashboard.
+        void Step(string name, string status, string? detail = null)
+        {
+            var elapsed = stepSw.ElapsedMilliseconds;
+            reporter.Report(name, status, elapsed, detail);
+            stepSw.Restart();
+        }
+
         var sw = Stopwatch.StartNew();
 
         try
         {
+            reporter.Starting("kill-excel");
             // Step 1: Quit Excel gracefully (prevents Document Recovery on next launch)
             _hooks.Disconnect();
 
@@ -75,7 +101,7 @@ public class ReloadOrchestrator
                 }
                 Thread.Sleep(500);
             }
-            steps.Add($"kill-excel: graceful={gracefulQuit}, remaining_killed={procs.Length}");
+            Step("kill-excel", "ok", $"graceful={gracefulQuit}, remaining_killed={procs.Length}");
 
             // Clean up recovery files so Document Recovery panel doesn't appear
             try
@@ -102,42 +128,51 @@ public class ReloadOrchestrator
 
             // Step 2: Ensure XRai-Skill-Local NuGet source exists
             // (idempotent — if already configured, dotnet returns error which we ignore)
+            reporter.Starting("nuget-source");
             var skillPackagesDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                 ".claude", "skills", "xrai-excel", "packages");
             if (Directory.Exists(skillPackagesDir))
             {
                 RunDotnet($"nuget add source \"{skillPackagesDir}\" --name XRai-Skill-Local", ignoreExit: true);
-                steps.Add("nuget-source: ensured XRai-Skill-Local");
+                Step("nuget-source", "ok", "ensured XRai-Skill-Local");
+            }
+            else
+            {
+                Step("nuget-source", "skip", "skill packages dir not present");
             }
 
-            // Step 3: Clear NuGet HTTP cache so wildcard Version="1.0.*" re-resolves
+            // Step 3: Clear NuGet HTTP cache so wildcard Version="1.0.0-*" re-resolves
             // to the latest XRai.Hooks package. Without this, NuGet serves a cached
             // older version even when a newer .nupkg is in the local source folder.
+            reporter.Starting("nuget-cache-clear");
             RunDotnet("nuget locals http-cache --clear", ignoreExit: true);
-            steps.Add("nuget-cache: cleared");
+            Step("nuget-cache-clear", "ok");
 
             // Step 4: Restore (pulls latest XRai.Hooks via the wildcard)
+            reporter.Starting("dotnet-restore");
             var restoreResult = RunDotnet($"restore \"{project}\" --force --verbosity quiet");
             if (restoreResult.ExitCode != 0)
             {
                 // Non-fatal — build may still succeed if packages are already present
-                steps.Add($"dotnet restore: warning (exit {restoreResult.ExitCode})");
+                Step("dotnet-restore", "warning", $"exit {restoreResult.ExitCode}");
             }
             else
             {
-                steps.Add("dotnet restore: success");
+                Step("dotnet-restore", "ok");
             }
 
             // Step 5: Build
+            reporter.Starting("dotnet-build");
             var buildResult = RunDotnet($"build \"{project}\" -c {config} --nologo --verbosity quiet");
             if (buildResult.ExitCode != 0)
             {
+                Step("dotnet-build", "error", $"exit {buildResult.ExitCode}");
                 return Response.Error($"Build failed (exit code {buildResult.ExitCode}). " +
                     $"stderr: {buildResult.Stderr.Trim()}. stdout: {buildResult.Stdout.Trim()}",
                     code: ErrorCodes.BuildFailed);
             }
-            steps.Add("dotnet build: success");
+            Step("dotnet-build", "ok");
 
             // Step 3: Find the .xll
             string xllPath;
@@ -173,17 +208,19 @@ public class ReloadOrchestrator
             if (!File.Exists(xllPath))
                 return Response.Error($"XLL not found after build: {xllPath}");
 
-            steps.Add($"xll: {Path.GetFileName(xllPath)}");
+            Step("xll-resolve", "ok", Path.GetFileName(xllPath));
 
             // Step 4: Launch Excel with the .xll
+            reporter.Starting("launch-excel");
             Process.Start(new ProcessStartInfo
             {
                 FileName = xllPath,
                 UseShellExecute = true,
             });
-            steps.Add("launch: started");
+            Step("launch-excel", "ok");
 
             // Step 5: Wait for Excel + connect
+            reporter.Starting("attach-com");
             int maxWaitMs = 20000;
             int waited = 0;
             bool attached = false;
@@ -201,10 +238,13 @@ public class ReloadOrchestrator
             }
 
             if (!attached)
+            {
+                Step("attach-com", "error", $"COM attach failed after {waited}ms");
                 return Response.Error("Excel launched but COM attach failed after 20s. " +
                     "Excel may still be loading — try {\"cmd\":\"connect\"} manually.");
+            }
 
-            steps.Add($"attach: ok ({waited}ms)");
+            Step("attach-com", "ok", $"{waited}ms");
 
             // Step 6: Ensure workbook
             var state = _session.ProbeWorkbookState();
@@ -263,15 +303,15 @@ public class ReloadOrchestrator
 
             if (hooksOk)
             {
-                steps.Add($"hooks: connected ({hooksWaited}ms)");
+                Step("hooks-connect", "ok", $"{hooksWaited}ms");
             }
             else
             {
                 var diag = sawToken
-                    ? $"hooks: not connected after {hooksWaited}ms — auth token found but handshake failed" +
+                    ? $"auth token found but handshake failed" +
                       (lastHooksError != null ? $" ({lastHooksError})" : "")
-                    : $"hooks: not connected after {hooksWaited}ms — no auth token at %LOCALAPPDATA%\\XRai\\tokens\\xrai_{{pid}}.token. Pilot.Start() may have crashed — check {{\"cmd\":\"log.read\",\"source\":\"startup\"}}";
-                steps.Add(diag);
+                    : $"no auth token — Pilot.Start() may have crashed. Check log.read source=startup";
+                Step("hooks-connect", "error", diag);
             }
 
             sw.Stop();
@@ -279,7 +319,7 @@ public class ReloadOrchestrator
             {
                 rebuilt = true,
                 total_ms = sw.ElapsedMilliseconds,
-                steps,
+                steps = reporter.Lines,
                 xll = xllPath,
                 hooks = hooksOk,
                 hooks_wait_ms = hooksWaited,

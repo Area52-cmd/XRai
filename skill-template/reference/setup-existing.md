@@ -34,14 +34,14 @@ If both return hits, skip to Verification (step A7).
 Edit the `.csproj`:
 
 ```xml
-<PackageReference Include="XRai.Hooks" Version="1.0.*" />
+<PackageReference Include="XRai.Hooks" Version="1.0.0-*" />
 ```
 
-**Critical**: use `Version="1.0.*"` (wildcard), NOT pinned `1.0.0`. The wildcard resolves to the newest matching package.
+**Critical**: use `Version="1.0.0-*"` (wildcard), NOT pinned `1.0.0`. The wildcard resolves to the newest matching package.
 
 Alternative CLI form:
 ```bash
-dotnet add <AddinProject>.csproj package XRai.Hooks --version "1.0.*" --source XRai-Skill-Local
+dotnet add <AddinProject>.csproj package XRai.Hooks --version "1.0.0-*" --source XRai-Skill-Local
 dotnet restore
 ```
 
@@ -128,7 +128,7 @@ Expected:
 
 | Concern | File |
 |---|---|
-| PackageReference for XRai.Hooks | `*.csproj` — must use `Version="1.0.*"` |
+| PackageReference for XRai.Hooks | `*.csproj` — must use `Version="1.0.0-*"` |
 | `Pilot.Start()` / `Pilot.Stop()` | `AddInEntry.cs` (class implementing `IExcelAddIn`) |
 | `Pilot.Expose(pane)` | Wherever the task pane UserControl is constructed |
 | `Pilot.ExposeModel(vm)` | Same file as `Pilot.Start()`, or DI container setup |

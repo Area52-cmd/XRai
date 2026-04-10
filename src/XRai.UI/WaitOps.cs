@@ -26,10 +26,10 @@ public class WaitOps
 
     public void Register(CommandRouter router)
     {
-        router.Register("wait.element", HandleWaitElement);
-        router.Register("wait.window", HandleWaitWindow);
-        router.Register("wait.property", HandleWaitProperty);
-        router.Register("wait.gone", HandleWaitGone);
+        router.RegisterNoSta("wait.element", HandleWaitElement);
+        router.RegisterNoSta("wait.window", HandleWaitWindow);
+        router.RegisterNoSta("wait.property", HandleWaitProperty);
+        router.RegisterNoSta("wait.gone", HandleWaitGone);
     }
 
     private UIA3Automation GetAutomation()

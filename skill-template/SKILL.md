@@ -87,7 +87,7 @@ Store answers in the project's `CLAUDE.md` under `## Add-in UX Preferences`.
 ## Existing project setup
 
 1. Detect: `grep -r "ExcelDna.AddIn" --include="*.csproj" .`
-2. Add package: `dotnet add package XRai.Hooks --version "1.0.*"`
+2. Add package: `dotnet add package XRai.Hooks --version "1.0.0-*"`
 3. Wire Pilot: see `./reference/setup-existing.md`
 4. Rebuild: `{"cmd":"rebuild","project":"path/to.csproj"}`
 5. Verify: `{"cmd":"batch","commands":[{"cmd":"connect"},{"cmd":"pane"},{"cmd":"model"}]}`

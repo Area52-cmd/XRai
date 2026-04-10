@@ -1,11 +1,8 @@
 // Leak-audited: 2026-04-10 — Register replaces existing entries by key so
-// repeated Pilot.Expose calls do not accumulate adapter instances. The
-// registry holds a strong reference to each FrameworkElement adapter;
-// rerunning Expose with a freshly-built pane replaces the old adapters but
-// does NOT proactively unsubscribe events from the old elements. Since
-// adapters only hold the FrameworkElement and don't subscribe to its events,
-// no event-handler leak is possible — the old adapters become unreachable
-// once Register replaces them and the GC can collect them.
+// repeated Pilot.Expose calls do not accumulate adapter instances. As of the
+// Studio instrumentation, ControlAdapter subscribes to DependencyPropertyDescriptor
+// value-changed callbacks, so the registry now proactively disposes the old
+// adapter on re-registration to release those subscriptions.
 
 using System.Windows;
 
@@ -25,6 +22,10 @@ public class ControlRegistry
 
     public void Register(string name, IControlAdapter adapter)
     {
+        if (_controls.TryGetValue(name, out var existing) && existing is IDisposable d)
+        {
+            try { d.Dispose(); } catch { }
+        }
         _controls[name] = adapter;
     }
 
@@ -34,4 +35,21 @@ public class ControlRegistry
     }
 
     public IEnumerable<KeyValuePair<string, IControlAdapter>> All => _controls;
+
+    /// <summary>
+    /// Dispose every registered adapter — releases all DependencyPropertyDescriptor
+    /// subscriptions so the old visual tree can be GC'd cleanly. Called before
+    /// a fresh Pilot.Expose walks a newly-built pane.
+    /// </summary>
+    public void Clear()
+    {
+        foreach (var adapter in _controls.Values)
+        {
+            if (adapter is IDisposable d)
+            {
+                try { d.Dispose(); } catch { }
+            }
+        }
+        _controls.Clear();
+    }
 }

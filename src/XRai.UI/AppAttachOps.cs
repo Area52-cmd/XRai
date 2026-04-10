@@ -21,9 +21,9 @@ public class AppAttachOps
 
     public void Register(CommandRouter router)
     {
-        router.Register("app.launch", HandleAppLaunch);
-        router.Register("app.list", HandleAppList);
-        router.Register("app.attach", HandleAppAttach);
+        router.RegisterNoSta("app.launch", HandleAppLaunch);
+        router.RegisterNoSta("app.list", HandleAppList);
+        router.RegisterNoSta("app.attach", HandleAppAttach);
     }
 
     private string HandleAppLaunch(JsonObject args)

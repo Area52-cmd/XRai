@@ -8,7 +8,24 @@ public delegate string CommandHandler(JsonObject args);
 public class CommandRouter
 {
     private readonly Dictionary<string, CommandHandler> _handlers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _noStaCommands = new(StringComparer.OrdinalIgnoreCase);
     private readonly EventStream _events;
+
+    /// <summary>
+    /// Optional callback invoked whenever the STA worker is detected as stuck.
+    /// Gives the hosting process a chance to auto-recycle the STA thread
+    /// before the user has to run {"cmd":"sta.reset"} manually.
+    /// Return true if recovery succeeded (the router will retry the command once);
+    /// false if recovery failed or isn't possible.
+    /// </summary>
+    public Func<bool>? StaAutoRecover { get; set; }
+
+    /// <summary>
+    /// Returns true when the given command has been registered via
+    /// <see cref="RegisterNoSta"/>, meaning it should bypass the STA worker
+    /// entirely (UIA / pipe-forwarder / non-COM handlers).
+    /// </summary>
+    public bool IsNoStaCommand(string cmd) => _noStaCommands.Contains(cmd);
 
     /// <summary>
     /// Global default timeout in milliseconds for every command. Can be overridden
@@ -50,6 +67,20 @@ public class CommandRouter
     public void Register(string command, CommandHandler handler)
     {
         _handlers[command] = handler;
+    }
+
+    /// <summary>
+    /// Register a command that must bypass the STA worker. Use for UI-automation
+    /// commands (FlaUI, UIA, Win32 window enumeration), pipe-forwarder commands
+    /// (pane.*, ribbon.click forwarders, dialog.* drivers), and anything that
+    /// does not touch Excel COM objects. Routing these through STA adds pointless
+    /// queue latency and can stall or stick the worker if the underlying handler
+    /// hangs (e.g. folder-dialog set_path hanging on UIA).
+    /// </summary>
+    public void RegisterNoSta(string command, CommandHandler handler)
+    {
+        _handlers[command] = handler;
+        _noStaCommands.Add(command);
     }
 
     public IEnumerable<string> RegisteredCommands => _handlers.Keys.OrderBy(c => c);
@@ -153,20 +184,26 @@ public class CommandRouter
             if (timeoutMs < slowDefault) timeoutMs = slowDefault;
         }
 
-        // timeout:0 = fire-and-forget: dispatch to the STA worker (if available)
-        // but return immediately with ok:true without waiting for the result.
-        // Used for modal-opening Commands where the agent knows it'll drive
-        // the dialog separately and doesn't want a 15s timeout error.
-        if (timeoutMs == 0 && _staInvoker != null)
+        // timeout:0 = fire-and-forget: dispatch the handler on a background
+        // thread and return immediately with ok:true. Used for modal-opening
+        // commands where the caller knows it'll drive the dialog separately
+        // and doesn't want a timeout error from the blocking round-trip.
+        //
+        // Note: we do NOT route fire-and-forget through _staInvoker. Most
+        // fire-and-forget targets are pipe forwarders (pane.click, ribbon.click,
+        // dialog.click, etc.) that don't need COM access at all — routing them
+        // through the STA worker adds a queue dependency that can stall or
+        // silently swallow the call if STA is busy with something else. The
+        // background Task.Run runs on the thread pool, which is what we want.
+        if (timeoutMs == 0)
         {
+            // Capture args before spawning the task — the caller may mutate
+            // the object before the background handler reads it.
+            var argsCopy = args;
             _ = Task.Run(() =>
             {
-                try { _staInvoker(() =>
-                {
-                    try { return handler(args); }
-                    catch { return ""; }
-                }, 300_000); }
-                catch { }
+                try { handler(argsCopy); }
+                catch { /* fire-and-forget: no caller to surface errors to */ }
             });
             return Response.Ok(new { fire_and_forget = true, command = cmdName });
         }
@@ -178,11 +215,24 @@ public class CommandRouter
             catch (Exception ex) { return Response.Error($"{ex.GetType().Name}: {ex.Message}"); }
         }
 
+        // NO-STA PATH: commands explicitly marked as not-COM (UIA drivers, pipe
+        // forwarders, etc.) bypass the STA worker entirely. Running them on the
+        // thread pool with a timeout guard avoids (a) clogging the STA queue
+        // with UIA work, and (b) the stuck-STA regression where a hung UIA
+        // call poisons all subsequent COM commands.
+        if (_noStaCommands.Contains(cmdName))
+        {
+            return InvokeOnThreadPoolWithTimeout(cmdName, handler, args, timeoutMs);
+        }
+
         // PREFERRED PATH: route through the STA worker if one is registered.
         // This is where IOleMessageFilter lives and where all COM calls should
         // happen. The worker serializes work via a single-threaded queue.
         if (_staInvoker != null)
         {
+            // Auto-recover if the STA worker reports itself stuck before we
+            // even dispatch. This gives us a one-shot attempt to recycle the
+            // thread without the user having to run {"cmd":"sta.reset"}.
             try
             {
                 return _staInvoker(() =>
@@ -190,6 +240,29 @@ public class CommandRouter
                     try { return handler(args); }
                     catch (Exception ex) { return Response.Error($"{ex.GetType().Name}: {ex.Message}"); }
                 }, timeoutMs);
+            }
+            catch (TimeoutException) when (StaAutoRecover != null && StaAutoRecover())
+            {
+                // Auto-recovery succeeded — retry the command once against the
+                // fresh STA thread. If it fails again, treat it as tainted.
+                try
+                {
+                    return _staInvoker!(() =>
+                    {
+                        try { return handler(args); }
+                        catch (Exception ex) { return Response.Error($"{ex.GetType().Name}: {ex.Message}"); }
+                    }, timeoutMs);
+                }
+                catch (TimeoutException)
+                {
+                    IsTainted = true;
+                    return Response.ErrorWithData(
+                        $"Command '{cmdName}' timed out again after STA auto-recovery. " +
+                        "The underlying operation is genuinely hung — check for a modal dialog " +
+                        "or COM deadlock and try {\"cmd\":\"sta.reset\"} + {\"cmd\":\"connect\"}.",
+                        null,
+                        ErrorCodes.StaTimeout);
+                }
             }
             catch (TimeoutException)
             {
@@ -217,6 +290,19 @@ public class CommandRouter
         // thread with timeout. This path is used only when the router is
         // constructed without an STA worker (e.g., in unit tests) — it doesn't
         // get IOleMessageFilter protection.
+        return InvokeOnThreadPoolWithTimeout(cmdName, handler, args, timeoutMs);
+    }
+
+    /// <summary>
+    /// Run a handler on a background thread with a hard timeout. Used for:
+    ///   1. Commands marked via RegisterNoSta (UIA drivers, pipe forwarders)
+    ///   2. Unit tests where no STA worker is registered
+    /// Does NOT taint the router on timeout — the thread is abandoned but the
+    /// stuck handler has no cross-command side effects because it never held
+    /// the STA queue.
+    /// </summary>
+    private string InvokeOnThreadPoolWithTimeout(string cmdName, CommandHandler handler, JsonObject args, int timeoutMs)
+    {
         string? result = null;
         Exception? captured = null;
         var done = new ManualResetEventSlim(false);
@@ -248,7 +334,7 @@ public class CommandRouter
             return result ?? Response.Error("Handler returned null");
         }
 
-        IsTainted = true;
+        // Don't taint — NoSta commands can't poison other commands' state.
         return Response.Error(
             $"Command '{cmdName}' timed out after {timeoutMs}ms. " +
             "Suggestions: dialog.dismiss, win32.dialog.dismiss, kill-excel, or increase timeout."

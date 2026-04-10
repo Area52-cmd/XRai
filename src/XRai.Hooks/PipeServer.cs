@@ -117,8 +117,32 @@ public class PipeServer
     // response even though the command actually succeeded.
     private volatile bool _commandInFlight;
 
+    /// <summary>
+    /// In-process event hook — fires on EVERY PushEvent call, including while
+    /// a command is in flight. This is what XRai.Studio subscribes to inside
+    /// the add-in process to get an uninterrupted event stream without
+    /// touching the pipe (which has to stay silent during command execution
+    /// to avoid interleaving with the command response on the client side).
+    ///
+    /// Subscribers must be fast and non-blocking — they run on whatever
+    /// thread called PushEvent (typically the UI thread). Do NOT call
+    /// Dispatcher.Invoke or any blocking COM call inside a subscriber.
+    ///
+    /// The Studio subscribes from XRai.Studio.Sources.PipeEventSource via
+    /// reflection so XRai.Hooks does not take a build-time dependency on
+    /// Studio. If nothing subscribes (direct CLI mode, no Studio loaded),
+    /// this is a no-op delegate invocation.
+    /// </summary>
+    public static event Action<string, object?>? OnEventEmitted;
+
     public void PushEvent(string eventType, object? data = null)
     {
+        // Fire the in-process event FIRST, before any suppression logic.
+        // Studio listens here so it sees every event regardless of whether
+        // the pipe is currently blocked on a command response.
+        try { OnEventEmitted?.Invoke(eventType, data); }
+        catch (Exception ex) { Debug.WriteLine($"OnEventEmitted subscriber threw: {ex.Message}"); }
+
         // Suppress event writes while a command is in flight. Events are
         // informational (log, error captures) and non-critical — dropping
         // them during a command call is safe. The alternative (queueing and

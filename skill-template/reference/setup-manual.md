@@ -22,7 +22,7 @@ rm Class1.cs
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="ExcelDna.AddIn" Version="1.9.0" />
-    <PackageReference Include="XRai.Hooks" Version="1.0.*" />
+    <PackageReference Include="XRai.Hooks" Version="1.0.0-*" />
   </ItemGroup>
 </Project>
 ```

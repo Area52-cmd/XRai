@@ -42,32 +42,35 @@ public class HookConnection : IDisposable
         PerformAuthHandshake(PipeName);
     }
 
+    /// <summary>
+    /// True if the most recent Connect() skipped the auth handshake because the
+    /// target process is running an older XRai.Hooks version without token auth.
+    /// Surfaced in diagnostics so callers know they're in legacy mode.
+    /// </summary>
+    public bool LegacyAuthFallback { get; private set; }
+
     private void PerformAuthHandshake(string pipeName)
     {
         if (_writer == null || _reader == null || _pipe == null) return;
 
+        LegacyAuthFallback = false;
+
         var token = PipeAuth.ReadToken(pipeName);
         if (string.IsNullOrEmpty(token))
         {
-            // No token file — target process may not have XRai.Hooks running with
-            // the current security hardening. Try the XRAI_ALLOW_UNAUTH escape
-            // hatch first: if the caller has deliberately opted into legacy
-            // behavior, send a placeholder handshake so the server's fallback
-            // path activates; otherwise surface a clear error.
-            if (PipeAuth.AllowUnauthenticated)
-            {
-                // Don't send anything here — the server's legacy fallback will
-                // treat the FIRST command line as both handshake and command.
-                return;
-            }
-
-            var tokenPath = PipeAuth.GetTokenFilePath(pipeName);
-            ForceDisconnect();
-            throw new InvalidOperationException(
-                $"Hooks auth token file not found at '{tokenPath}'. " +
-                "The target Excel process may not have XRai.Hooks running, " +
-                "or it is running an older version without token auth. " +
-                "Set XRAI_ALLOW_UNAUTH=1 to bypass (NOT recommended for production).");
+            // No token file — target process is running an older XRai.Hooks
+            // that doesn't use token auth. Auto-fallback to legacy mode: don't
+            // send a handshake line, dispatch commands directly. The older
+            // server treats the first line as the first command so this is
+            // wire-compatible.
+            //
+            // Security note: the pipe ACL (per-user + SYSTEM only) remains in
+            // force regardless. Falling back to no-handshake does NOT expose
+            // the pipe to other local users — it only skips the extra
+            // application-level token check that old XRai.Hooks builds don't
+            // know how to respond to.
+            LegacyAuthFallback = true;
+            return;
         }
 
         try

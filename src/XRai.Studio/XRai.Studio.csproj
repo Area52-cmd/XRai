@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>XRai.Studio</RootNamespace>
+    <!-- Required for AspNetCore types -->
+    <UseWindowsForms>false</UseWindowsForms>
+  </PropertyGroup>
+
+  <!--
+    ASP.NET Core shared framework. This gives us Kestrel, WebSockets, routing,
+    middleware, and static file serving without any NuGet packages. It adds a
+    dependency on the Microsoft.AspNetCore.App shared framework that must be
+    installed on the target machine alongside the .NET 8 desktop runtime —
+    XRai already requires the desktop runtime, so this is a small marginal ask.
+  -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XRai.Core\XRai.Core.csproj" />
+    <ProjectReference Include="..\XRai.Vision\XRai.Vision.csproj" />
+  </ItemGroup>
+
+  <!--
+    Embed the single-page dashboard (HTML + JS + CSS) as resources so the
+    Studio assembly is self-contained — no separate wwwroot directory to ship.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="wwwroot\**\*" />
+  </ItemGroup>
+
+</Project>

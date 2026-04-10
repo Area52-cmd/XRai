@@ -178,6 +178,88 @@ public class Capture
         return Response.Error($"Unknown screenshot mode: '{mode}'. Valid: window | main_plus_modal | all_windows | foreground. Or pass hwnd:<handle>.");
     }
 
+    // ── Public helper for Studio / streaming clients ─────────────────
+
+    /// <summary>
+    /// Capture a window by HWND into an in-memory JPEG byte array. Used by
+    /// XRai.Studio's CaptureLoop to stream continuous frames to the dashboard.
+    /// No file IO — the bitmap is encoded and returned directly.
+    /// </summary>
+    /// <param name="hwnd">Target window handle. Must be valid.</param>
+    /// <param name="crop">Optional crop rectangle in client coordinates (relative to the window's top-left). Null = full window.</param>
+    /// <param name="quality">JPEG quality 1-100. Studio default is 70 for ~40 KB per 1280x720 frame.</param>
+    /// <returns>JPEG bytes, or null on failure (invalid hwnd, zero-size window, encode error).</returns>
+    public static byte[]? CaptureHwndToJpeg(nint hwnd, Rectangle? crop = null, int quality = 70)
+    {
+        if (!IsWindow(hwnd)) return null;
+        if (!GetWindowRect(hwnd, out var rect)) return null;
+        if (rect.Width <= 0 || rect.Height <= 0) return null;
+
+        try
+        {
+            using var bmp = new Bitmap(rect.Width, rect.Height);
+            using (var gfx = Graphics.FromImage(bmp))
+            {
+                var hdc = gfx.GetHdc();
+                try { PrintWindow(hwnd, hdc, PW_RENDERFULLCONTENT); }
+                finally { gfx.ReleaseHdc(hdc); }
+            }
+
+            // Optional crop to the requested subrect (e.g. task pane bounds)
+            Bitmap toEncode = bmp;
+            Bitmap? cropped = null;
+            if (crop.HasValue)
+            {
+                var c = crop.Value;
+                // Clamp crop to bitmap bounds
+                int x = Math.Max(0, c.X);
+                int y = Math.Max(0, c.Y);
+                int w = Math.Min(bmp.Width - x, c.Width);
+                int h = Math.Min(bmp.Height - y, c.Height);
+                if (w > 0 && h > 0)
+                {
+                    cropped = bmp.Clone(new Rectangle(x, y, w, h), bmp.PixelFormat);
+                    toEncode = cropped;
+                }
+            }
+
+            using var ms = new MemoryStream();
+            var jpegEncoder = GetJpegEncoder();
+            if (jpegEncoder != null)
+            {
+                var encoderParams = new EncoderParameters(1);
+                encoderParams.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, (long)Math.Clamp(quality, 1, 100));
+                toEncode.Save(ms, jpegEncoder, encoderParams);
+            }
+            else
+            {
+                toEncode.Save(ms, ImageFormat.Jpeg);
+            }
+
+            cropped?.Dispose();
+            return ms.ToArray();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static ImageCodecInfo? _jpegEncoderCache;
+    private static ImageCodecInfo? GetJpegEncoder()
+    {
+        if (_jpegEncoderCache != null) return _jpegEncoderCache;
+        foreach (var codec in ImageCodecInfo.GetImageEncoders())
+        {
+            if (codec.FormatID == ImageFormat.Jpeg.Guid)
+            {
+                _jpegEncoderCache = codec;
+                return codec;
+            }
+        }
+        return null;
+    }
+
     // ── Single window capture ────────────────────────────────────────
 
     private string CaptureSingleWindow(nint hwnd, string? path, string modeLabel)

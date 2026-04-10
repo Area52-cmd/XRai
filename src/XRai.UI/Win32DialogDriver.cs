@@ -145,14 +145,14 @@ public class Win32DialogDriver : IDialogWatchdog, ITimeoutDiagnostics
 
     public void Register(CommandRouter router)
     {
-        router.Register("win32.dialog.list", HandleList);
-        router.Register("win32.dialog.dismiss", HandleDismiss);
-        router.Register("win32.dialog.click", HandleClick);
-        router.Register("win32.dialog.type", HandleWin32Type);
-        router.Register("win32.dialog.read", HandleWin32Read);
-        router.Register("excel.autodismiss", HandleAutodismiss);
-        router.Register("excel.autodismiss.status", HandleAutodismissStatus);
-        router.Register("dialog.auto_click", HandleAutoClick);
+        router.RegisterNoSta("win32.dialog.list", HandleList);
+        router.RegisterNoSta("win32.dialog.dismiss", HandleDismiss);
+        router.RegisterNoSta("win32.dialog.click", HandleClick);
+        router.RegisterNoSta("win32.dialog.type", HandleWin32Type);
+        router.RegisterNoSta("win32.dialog.read", HandleWin32Read);
+        router.RegisterNoSta("excel.autodismiss", HandleAutodismiss);
+        router.RegisterNoSta("excel.autodismiss.status", HandleAutodismissStatus);
+        router.RegisterNoSta("dialog.auto_click", HandleAutoClick);
     }
 
     // ── Targeted dialog auto-click ──────────────────────────────────

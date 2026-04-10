@@ -77,12 +77,12 @@ public class FileDialogDriver
 
     public void Register(CommandRouter router)
     {
-        router.Register("dialog.wait", HandleWait);
-        router.Register("dialog.list", HandleDialogList);
-        router.Register("folder.dialog.pick", HandleFolderPick);
-        router.Register("folder.dialog.navigate", HandleFolderNavigate);
-        router.Register("folder.dialog.set_path", HandleFolderSetPath);
-        router.Register("file.dialog.pick", HandleFilePick);
+        router.RegisterNoSta("dialog.wait", HandleWait);
+        router.RegisterNoSta("dialog.list", HandleDialogList);
+        router.RegisterNoSta("folder.dialog.pick", HandleFolderPick);
+        router.RegisterNoSta("folder.dialog.navigate", HandleFolderNavigate);
+        router.RegisterNoSta("folder.dialog.set_path", HandleFolderSetPath);
+        router.RegisterNoSta("file.dialog.pick", HandleFilePick);
     }
 
     private UIA3Automation GetAutomation()
@@ -175,6 +175,23 @@ public class FileDialogDriver
             try
             {
                 var dialog = FindDialog(automation, titleFilter, kind, excelPids);
+
+                // Title-only search found nothing? Try a structural fallback for
+                // folder pickers. Modern IFileDialog folder pickers with
+                // UseDescriptionForTitle=true expose a title like "Select Folder"
+                // that may not match the user's filter (e.g. the user passed the
+                // *description* as the title). We catch these via IsLikelyFolderPicker.
+                //
+                // Likewise: if the filter matches no UIA element, check whether a
+                // structural folder picker is open and return it with a warning
+                // field so the caller knows the title didn't match.
+                bool titleFallbackUsed = false;
+                if (dialog == null && titleFilter != null && kind == null)
+                {
+                    dialog = FindDialog(automation, titleFilter: null, kind: "folder", excelPids);
+                    if (dialog != null) titleFallbackUsed = true;
+                }
+
                 if (dialog != null)
                 {
                     return Response.Ok(new
@@ -185,6 +202,10 @@ public class FileDialogDriver
                         automation_id = SafeGet(() => dialog.AutomationId),
                         elapsed_ms = sw.ElapsedMilliseconds,
                         buttons = DumpButtons(dialog),
+                        title_fallback = titleFallbackUsed,
+                        title_fallback_note = titleFallbackUsed
+                            ? $"Title filter '{titleFilter}' didn't match any window, but a folder picker was detected structurally (IFileDialog with path Edit 1148 or Select button)."
+                            : null,
                     });
                 }
             }

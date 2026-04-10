@@ -1,0 +1,310 @@
+using System.Diagnostics;
+using System.Net.WebSockets;
+using System.Reflection;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using XRai.Core;
+
+namespace XRai.Studio;
+
+/// <summary>
+/// The Studio web host. Owns the Kestrel server, the event bus, the state
+/// provider, and the embedded dashboard resources. Started from
+/// XRai.Tool.DaemonServer when --studio is passed (or when {"cmd":"studio"}
+/// is sent to an already-running daemon).
+///
+/// Design goals:
+///   1. Zero config — picks an ephemeral port, opens the browser itself.
+///   2. Single-user — binds to 127.0.0.1 only, one-time token handshake.
+///   3. Additive — does not modify the existing XRai command router or pipe.
+///   4. Self-contained — HTML/JS/CSS are embedded resources, no wwwroot dir.
+/// </summary>
+public sealed class StudioHost : IDisposable
+{
+    public EventBus Bus { get; } = new();
+    public string Token { get; private set; } = "";
+    public string Url { get; private set; } = "";
+    public int Port { get; private set; }
+
+    private IHost? _host;
+    private readonly Func<JsonObject> _stateProvider;
+    private readonly Func<string, JsonObject, string>? _commandDispatcher;
+    private readonly List<IDisposable> _disposables = new();
+
+    /// <param name="stateProvider">Called on every GET /state request to
+    ///     snapshot the current state (attach, pane, model, screenshot URL).</param>
+    /// <param name="commandDispatcher">Optional. POST /command forwards here
+    ///     (cmd name + args object → JSON response). If null, /command returns
+    ///     501 Not Implemented.</param>
+    public StudioHost(
+        Func<JsonObject> stateProvider,
+        Func<string, JsonObject, string>? commandDispatcher = null)
+    {
+        _stateProvider = stateProvider;
+        _commandDispatcher = commandDispatcher;
+    }
+
+    /// <summary>
+    /// Register a disposable whose lifetime is tied to the host (sources
+    /// like CaptureLoop, FileWatcherSource, PipeEventSource). They get
+    /// disposed automatically when the host stops.
+    /// </summary>
+    public void RegisterDisposable(IDisposable d) => _disposables.Add(d);
+
+    /// <summary>
+    /// Start Kestrel on an ephemeral 127.0.0.1 port, mint a fresh token,
+    /// and optionally launch the default browser at the authenticated URL.
+    /// Returns the full launch URL (with ?t=token query string).
+    /// </summary>
+    public string Start(bool launchBrowser = true)
+    {
+        Token = StudioToken.GenerateAndStore();
+
+        var builder = Host.CreateDefaultBuilder()
+            .ConfigureWebHostDefaults(web =>
+            {
+                web.UseUrls("http://127.0.0.1:0");
+                web.Configure(Configure);
+            })
+            .ConfigureLogging(logging =>
+            {
+                // Keep Kestrel quiet — the daemon's log file is the source of
+                // truth. We only want errors in case something goes wrong.
+                logging.ClearProviders();
+                logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
+                logging.AddFilter("Microsoft.Hosting", LogLevel.Warning);
+            });
+
+        _host = builder.Build();
+        _host.Start();
+
+        // Resolve the actual bound port from the server addresses feature
+        var server = _host.Services.GetRequiredService<Microsoft.AspNetCore.Hosting.Server.IServer>();
+        var addresses = server.Features.Get<IServerAddressesFeature>();
+        var addr = addresses?.Addresses.FirstOrDefault() ?? "http://127.0.0.1:0";
+        // Parse port out of "http://127.0.0.1:54321"
+        var uri = new Uri(addr);
+        Port = uri.Port;
+        Url = $"http://127.0.0.1:{Port}/?t={Token}";
+
+        if (launchBrowser)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = Url,
+                    UseShellExecute = true,
+                });
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Failed to launch browser: {ex.Message}");
+                Console.Error.WriteLine($"Studio URL: {Url}");
+            }
+        }
+
+        return Url;
+    }
+
+    private void Configure(IApplicationBuilder app)
+    {
+        app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(30) });
+
+        app.Use(async (ctx, next) =>
+        {
+            // Token handshake:
+            //  - Cookie is the normal long-lived auth for browser tabs.
+            //  - ?t= query param is accepted on every request (API clients,
+            //    WebSocket upgrades, and the first HTML load).
+            //  - ONLY the browser HTML entry point (/ or /index.html) gets the
+            //    promote-to-cookie-then-redirect treatment — for API endpoints
+            //    the redirect strips the token and breaks curl-style callers.
+            var path = ctx.Request.Path.Value ?? "/";
+            var queryToken = ctx.Request.Query["t"].ToString();
+            var cookieToken = ctx.Request.Cookies["xrai-studio"] ?? "";
+
+            bool queryAuthed = StudioToken.ValidateToken(Token, queryToken);
+            bool cookieAuthed = StudioToken.ValidateToken(Token, cookieToken);
+            bool authed = queryAuthed || cookieAuthed;
+
+            // HTML entry point: promote ?t= to a cookie on first load so the
+            // browser doesn't keep the token in the URL bar / history.
+            bool isEntryPoint = path == "/" || path == "/index.html";
+            if (isEntryPoint && queryAuthed && !cookieAuthed)
+            {
+                ctx.Response.Cookies.Append("xrai-studio", Token, new CookieOptions
+                {
+                    HttpOnly = true,
+                    Secure = false, // localhost, no TLS
+                    SameSite = SameSiteMode.Strict,
+                    Path = "/",
+                });
+                ctx.Response.Redirect(ctx.Request.Path);
+                return;
+            }
+
+            if (!authed)
+            {
+                ctx.Response.StatusCode = 401;
+                await ctx.Response.WriteAsync("Unauthorized. Use the URL printed when the daemon started (includes a one-time token).");
+                return;
+            }
+
+            await next();
+        });
+
+        app.Use(async (ctx, next) =>
+        {
+            var path = ctx.Request.Path.Value ?? "/";
+
+            if (path == "/events" && ctx.WebSockets.IsWebSocketRequest)
+            {
+                await HandleEventsWebSocket(ctx);
+                return;
+            }
+
+            if (path == "/state")
+            {
+                var json = _stateProvider().ToJsonString();
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(json);
+                return;
+            }
+
+            if (path == "/command" && ctx.Request.Method == "POST")
+            {
+                await HandleCommand(ctx);
+                return;
+            }
+
+            // Static assets — serve from embedded resources
+            if (path == "/" || path == "/index.html")
+            {
+                await ServeEmbedded(ctx, "index.html", "text/html; charset=utf-8");
+                return;
+            }
+
+            if (path == "/studio.js")
+            {
+                await ServeEmbedded(ctx, "studio.js", "application/javascript; charset=utf-8");
+                return;
+            }
+
+            if (path == "/studio.css")
+            {
+                await ServeEmbedded(ctx, "studio.css", "text/css; charset=utf-8");
+                return;
+            }
+
+            await next();
+        });
+    }
+
+    private async Task HandleEventsWebSocket(HttpContext ctx)
+    {
+        using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
+        var (id, reader) = Bus.Subscribe();
+        var cancel = ctx.RequestAborted;
+
+        try
+        {
+            await foreach (var evt in reader.ReadAllAsync(cancel))
+            {
+                if (ws.State != WebSocketState.Open) break;
+                var json = evt.ToJson().ToJsonString();
+                var bytes = Encoding.UTF8.GetBytes(json);
+                await ws.SendAsync(bytes, WebSocketMessageType.Text, endOfMessage: true, cancel);
+            }
+        }
+        catch (OperationCanceledException) { /* client went away */ }
+        catch (WebSocketException) { /* client went away hard */ }
+        finally
+        {
+            Bus.Unsubscribe(id);
+            try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None); } catch { }
+        }
+    }
+
+    private async Task HandleCommand(HttpContext ctx)
+    {
+        if (_commandDispatcher == null)
+        {
+            ctx.Response.StatusCode = 501;
+            await ctx.Response.WriteAsync("{\"ok\":false,\"error\":\"/command is disabled on this Studio instance\"}");
+            return;
+        }
+
+        using var reader = new StreamReader(ctx.Request.Body);
+        var body = await reader.ReadToEndAsync();
+        JsonObject? parsed;
+        try { parsed = JsonNode.Parse(body) as JsonObject; }
+        catch
+        {
+            ctx.Response.StatusCode = 400;
+            await ctx.Response.WriteAsync("{\"ok\":false,\"error\":\"Body must be a JSON object\"}");
+            return;
+        }
+
+        var cmd = parsed?["cmd"]?.GetValue<string>();
+        if (string.IsNullOrEmpty(cmd))
+        {
+            ctx.Response.StatusCode = 400;
+            await ctx.Response.WriteAsync("{\"ok\":false,\"error\":\"Missing 'cmd' field\"}");
+            return;
+        }
+
+        try
+        {
+            var result = _commandDispatcher(cmd, parsed!);
+            ctx.Response.ContentType = "application/json";
+            await ctx.Response.WriteAsync(result);
+        }
+        catch (Exception ex)
+        {
+            ctx.Response.StatusCode = 500;
+            await ctx.Response.WriteAsync($"{{\"ok\":false,\"error\":\"{JsonEncodedText.Encode(ex.Message)}\"}}");
+        }
+    }
+
+    private async Task ServeEmbedded(HttpContext ctx, string name, string contentType)
+    {
+        var asm = typeof(StudioHost).Assembly;
+        // Embedded resource naming convention: <default_namespace>.<folder>.<name>
+        var resourceName = $"XRai.Studio.wwwroot.{name}";
+        using var stream = asm.GetManifestResourceStream(resourceName);
+        if (stream == null)
+        {
+            ctx.Response.StatusCode = 404;
+            await ctx.Response.WriteAsync($"Resource not found: {resourceName}");
+            return;
+        }
+
+        ctx.Response.ContentType = contentType;
+        ctx.Response.Headers["Cache-Control"] = "no-cache";
+        await stream.CopyToAsync(ctx.Response.Body);
+    }
+
+    public void Dispose()
+    {
+        foreach (var d in _disposables)
+        {
+            try { d.Dispose(); } catch { }
+        }
+        _disposables.Clear();
+
+        try { _host?.StopAsync(TimeSpan.FromSeconds(2)).GetAwaiter().GetResult(); } catch { }
+        try { _host?.Dispose(); } catch { }
+        _host = null;
+
+        StudioToken.ClearStoredToken();
+    }
+}

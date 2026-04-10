@@ -38,50 +38,50 @@ public class PaneClient
     public void Register(CommandRouter router)
     {
         // Basic control interaction
-        router.Register("pane", HandlePane);
-        router.Register("pane.status", HandlePaneStatus);
-        router.Register("pane.type", HandlePaneType);
-        router.Register("pane.click", HandlePaneClick);
-        router.Register("pane.select", HandlePaneSelect);
-        router.Register("pane.toggle", HandlePaneToggle);
-        router.Register("pane.read", HandlePaneRead);
+        router.RegisterNoSta("pane", HandlePane);
+        router.RegisterNoSta("pane.status", HandlePaneStatus);
+        router.RegisterNoSta("pane.type", HandlePaneType);
+        router.RegisterNoSta("pane.click", HandlePaneClick);
+        router.RegisterNoSta("pane.select", HandlePaneSelect);
+        router.RegisterNoSta("pane.toggle", HandlePaneToggle);
+        router.RegisterNoSta("pane.read", HandlePaneRead);
 
         // Human simulation
-        router.Register("pane.double_click", HandlePaneDoubleClick);
-        router.Register("pane.right_click", HandlePaneRightClick);
-        router.Register("pane.hover", HandlePaneHover);
-        router.Register("pane.focus", HandlePaneFocus);
-        router.Register("pane.key", HandlePaneKey);
-        router.Register("pane.scroll", HandlePaneScroll);
-        router.Register("pane.info", HandlePaneInfo);
-        router.Register("pane.tree", HandlePaneTree);
+        router.RegisterNoSta("pane.double_click", HandlePaneDoubleClick);
+        router.RegisterNoSta("pane.right_click", HandlePaneRightClick);
+        router.RegisterNoSta("pane.hover", HandlePaneHover);
+        router.RegisterNoSta("pane.focus", HandlePaneFocus);
+        router.RegisterNoSta("pane.key", HandlePaneKey);
+        router.RegisterNoSta("pane.scroll", HandlePaneScroll);
+        router.RegisterNoSta("pane.info", HandlePaneInfo);
+        router.RegisterNoSta("pane.tree", HandlePaneTree);
 
         // DataGrid operations
-        router.Register("pane.grid.read", HandleGridRead);
-        router.Register("pane.grid.cell", HandleGridCell);
-        router.Register("pane.grid.select", HandleGridSelectRow);
+        router.RegisterNoSta("pane.grid.read", HandleGridRead);
+        router.RegisterNoSta("pane.grid.cell", HandleGridCell);
+        router.RegisterNoSta("pane.grid.select", HandleGridSelectRow);
 
         // TreeView operations
-        router.Register("pane.tree.expand", HandleTreeExpand);
+        router.RegisterNoSta("pane.tree.expand", HandleTreeExpand);
 
         // TabControl operations
-        router.Register("pane.tab", HandleTabSelect);
+        router.RegisterNoSta("pane.tab", HandleTabSelect);
 
         // ListBox/ListView/ComboBox read items + selection by index or text
-        router.Register("pane.list.read", HandleListRead);
-        router.Register("pane.list.select", HandleListSelect);
+        router.RegisterNoSta("pane.list.read", HandleListRead);
+        router.RegisterNoSta("pane.list.select", HandleListSelect);
 
         // Open/close ComboBox dropdown, Expander, TreeViewItem, MenuItem submenu
-        router.Register("pane.expand", HandleExpand);
+        router.RegisterNoSta("pane.expand", HandleExpand);
 
         // AI-agent interaction commands
-        router.Register("pane.wait", HandlePaneWait);
-        router.Register("pane.screenshot", HandlePaneScreenshot);
-        router.Register("pane.drag", HandlePaneDrag);
-        router.Register("pane.context_menu", HandlePaneContextMenu);
+        router.RegisterNoSta("pane.wait", HandlePaneWait);
+        router.RegisterNoSta("pane.screenshot", HandlePaneScreenshot);
+        router.RegisterNoSta("pane.drag", HandlePaneDrag);
+        router.RegisterNoSta("pane.context_menu", HandlePaneContextMenu);
 
         // Diagnostics
-        router.Register("log.read", HandleLogRead);
+        router.RegisterNoSta("log.read", HandleLogRead);
     }
 
     /// <summary>

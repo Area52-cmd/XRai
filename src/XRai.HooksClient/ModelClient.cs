@@ -14,9 +14,9 @@ public class ModelClient
 
     public void Register(CommandRouter router)
     {
-        router.Register("model", HandleModel);
-        router.Register("model.set", HandleModelSet);
-        router.Register("functions", HandleFunctions);
+        router.RegisterNoSta("model", HandleModel);
+        router.RegisterNoSta("model.set", HandleModelSet);
+        router.RegisterNoSta("functions", HandleFunctions);
     }
 
     private string HandleModel(JsonObject args)
