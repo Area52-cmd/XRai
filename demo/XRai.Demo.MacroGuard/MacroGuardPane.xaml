@@ -1,0 +1,634 @@
+<UserControl x:Class="XRai.Demo.MacroGuard.MacroGuardPane"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:XRai.Demo.MacroGuard"
+             Background="#1a1a2e" Foreground="White" Width="440">
+    <UserControl.Resources>
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontSize" Value="12"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#16213e"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="#0f3460"/>
+            <Setter Property="Padding" Value="4,2"/>
+            <Setter Property="CaretBrush" Value="White"/>
+        </Style>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#e94560"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="12,6"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Margin" Value="2"/>
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="#16213e"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Margin" Value="0,2,0,6"/>
+        </Style>
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Margin" Value="0,4"/>
+        </Style>
+        <Style TargetType="Label">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Padding" Value="0"/>
+        </Style>
+        <Style TargetType="Expander">
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+        <Style TargetType="ProgressBar">
+            <Setter Property="Background" Value="#16213e"/>
+            <Setter Property="Foreground" Value="#e94560"/>
+            <Setter Property="Height" Value="18"/>
+            <Setter Property="Margin" Value="0,4"/>
+        </Style>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </UserControl.Resources>
+
+    <Grid>
+        <TabControl x:Name="MainTabs" Background="#1a1a2e" Foreground="White">
+
+            <!-- ==================== TAB 1: MODULES ==================== -->
+            <TabItem Header="Modules" x:Name="ModulesTab">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="VBA Module Browser" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                        <!-- Search and filter bar -->
+                        <DockPanel Margin="0,0,0,6">
+                            <ComboBox x:Name="ModuleTypeFilter" DockPanel.Dock="Right" Width="100"
+                                      ItemsSource="{Binding ModuleTypes}" SelectedItem="{Binding SelectedModuleType}"/>
+                            <TextBox x:Name="SearchBox" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                                     Margin="0,0,6,0"/>
+                        </DockPanel>
+
+                        <Label x:Name="MacroCountLabel" Content="{Binding MacroCount, StringFormat='{}{0} macros'}" Foreground="#95e1d3" Margin="0,0,0,4"/>
+
+                        <!-- Module tree -->
+                        <TreeView x:Name="ModuleTree" ItemsSource="{Binding FilteredModules}"
+                                  Background="#16213e" Foreground="White" Height="200" BorderThickness="0"
+                                  SelectedItemChanged="ModuleTree_SelectedItemChanged">
+                            <TreeView.ItemTemplate>
+                                <HierarchicalDataTemplate ItemsSource="{Binding MacroNames}">
+                                    <TextBlock Text="{Binding Name}" Foreground="White"/>
+                                    <HierarchicalDataTemplate.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}" Foreground="#95e1d3"/>
+                                        </DataTemplate>
+                                    </HierarchicalDataTemplate.ItemTemplate>
+                                </HierarchicalDataTemplate>
+                            </TreeView.ItemTemplate>
+                        </TreeView>
+
+                        <Label x:Name="SelectedMacroLabel" Content="{Binding SelectedMacro, StringFormat='Selected: {0}'}"
+                               Foreground="#636e72" Margin="0,4,0,4"/>
+
+                        <!-- Code preview -->
+                        <TextBlock Text="Code Preview" FontWeight="Bold" Margin="0,8,0,4"/>
+                        <RichTextBox x:Name="CodePreview" Height="180" IsReadOnly="True"
+                                     Background="#1e1e1e" Foreground="#d4d4d4" BorderThickness="0"
+                                     FontFamily="Cascadia Code, Consolas" FontSize="11"
+                                     VerticalScrollBarVisibility="Auto"/>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                            <Button x:Name="RunMacroButton" Content="Run Macro" Command="{Binding RunMacroCommand}"/>
+                            <Button x:Name="RefreshButton" Content="Refresh" Command="{Binding RefreshCommand}"/>
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ==================== TAB 2: HEALTH CHECK ==================== -->
+            <TabItem Header="Health" x:Name="HealthTab">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="VBA Health Check" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                        <DockPanel Margin="0,0,0,6">
+                            <Button x:Name="ScanButton" Content="Scan All VBA" Command="{Binding ScanCommand}" DockPanel.Dock="Left"/>
+                            <ComboBox x:Name="SeverityFilter" DockPanel.Dock="Right" Width="90"
+                                      ItemsSource="{Binding Severities}" SelectedItem="{Binding SelectedSeverity}"/>
+                        </DockPanel>
+
+                        <ProgressBar x:Name="ScanProgress" Value="{Binding ScanProgress}" Maximum="100"/>
+
+                        <!-- Issue counts -->
+                        <StackPanel Orientation="Horizontal" Margin="0,4,0,4">
+                            <Label x:Name="IssueCountLabel" Content="{Binding IssueCount, StringFormat='{}{0} issues'}" Foreground="White" Margin="0,0,12,0"/>
+                            <Label x:Name="CriticalCountLabel" Content="{Binding CriticalCount, StringFormat='{}{0} errors'}" Foreground="#e94560" Margin="0,0,8,0"/>
+                            <Label x:Name="WarningCountLabel" Content="{Binding WarningCount, StringFormat='{}{0} warnings'}" Foreground="#f38181" Margin="0,0,8,0"/>
+                            <Label x:Name="InfoCountLabel" Content="{Binding InfoCount, StringFormat='{}{0} info'}" Foreground="#fce38a"/>
+                        </StackPanel>
+
+                        <!-- Issues grid -->
+                        <DataGrid x:Name="IssuesGrid" ItemsSource="{Binding FilteredIssues}" AutoGenerateColumns="False"
+                                  Background="#16213e" Foreground="White" RowBackground="#16213e"
+                                  AlternatingRowBackground="#1a1a2e" GridLinesVisibility="Horizontal"
+                                  BorderThickness="0" Height="250" IsReadOnly="True"
+                                  HeadersVisibility="Column" CanUserAddRows="False">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Sev" Binding="{Binding Severity}" Width="55"/>
+                                <DataGridTextColumn Header="Module" Binding="{Binding ModuleName}" Width="80"/>
+                                <DataGridTextColumn Header="Line" Binding="{Binding LineNumber}" Width="40"/>
+                                <DataGridTextColumn Header="Rule" Binding="{Binding RuleName}" Width="100"/>
+                                <DataGridTextColumn Header="Description" Binding="{Binding Description}" Width="*"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                            <Button x:Name="NavigateButton" Content="Open VBE" Command="{Binding NavigateCommand}"/>
+                            <Button x:Name="AutoFixButton" Content="Auto-Fix Safe Issues" Command="{Binding AutoFixCommand}"/>
+                        </StackPanel>
+
+                        <Expander x:Name="FixDetailExpander" Header="Fix Details" Foreground="White" Margin="0,8,0,0">
+                            <TextBox Text="{Binding FixDetail, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap"
+                                     Height="100" VerticalScrollBarVisibility="Auto" Background="#16213e" Foreground="#95e1d3"/>
+                        </Expander>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ==================== TAB 3: AI ASSISTANT ==================== -->
+            <TabItem Header="AI" x:Name="AiTab">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="AI VBA Assistant" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                        <!-- API Key -->
+                        <TextBlock Text="Claude API Key"/>
+                        <DockPanel Margin="0,2,0,4">
+                            <CheckBox x:Name="SaveKeyCheck" Content="Save" DockPanel.Dock="Right"
+                                      Foreground="White" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                            <PasswordBox x:Name="ApiKeyBox" Background="#16213e" Foreground="White"
+                                         BorderBrush="#0f3460" Padding="4,2"
+                                         PasswordChanged="ApiKeyBox_PasswordChanged"/>
+                        </DockPanel>
+                        <Label x:Name="ConnectedLabel" Foreground="#95e1d3" Margin="0,0,0,6">
+                            <Label.Style>
+                                <Style TargetType="Label">
+                                    <Setter Property="Content" Value="Not connected"/>
+                                    <Setter Property="Foreground" Value="#636e72"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsConnected}" Value="True">
+                                            <Setter Property="Content" Value="Connected to Claude"/>
+                                            <Setter Property="Foreground" Value="#95e1d3"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Label.Style>
+                        </Label>
+
+                        <!-- Model selection -->
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                            <TextBlock Text="Model:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <ComboBox x:Name="ModelCombo" Width="160"
+                                      ItemsSource="{Binding AiModels}" SelectedItem="{Binding SelectedAiModel}"/>
+                        </StackPanel>
+
+                        <!-- Temperature -->
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                            <TextBlock Text="Temperature:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <Slider x:Name="TemperatureSlider" Width="150" Minimum="0" Maximum="1"
+                                    Value="{Binding Temperature}" TickFrequency="0.1" IsSnapToTickEnabled="True"/>
+                            <TextBlock Text="{Binding Temperature, StringFormat=F1}" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                        </StackPanel>
+
+                        <!-- Code input -->
+                        <TextBlock Text="VBA Code" FontWeight="Bold"/>
+                        <RichTextBox x:Name="CodeInput" Height="120"
+                                     Background="#1e1e1e" Foreground="#d4d4d4" BorderThickness="0"
+                                     FontFamily="Cascadia Code, Consolas" FontSize="11"
+                                     VerticalScrollBarVisibility="Auto"
+                                     TextChanged="CodeInput_TextChanged"/>
+
+                        <!-- Prompt selection -->
+                        <TextBlock Text="Action" FontWeight="Bold" Margin="0,8,0,2"/>
+                        <ComboBox x:Name="PromptCombo" ItemsSource="{Binding Prompts}" SelectedItem="{Binding SelectedPrompt}"/>
+
+                        <TextBox x:Name="CustomPromptBox" Text="{Binding CustomPrompt, UpdateSourceTrigger=PropertyChanged}"
+                                 Margin="0,0,0,6"/>
+
+                        <DockPanel Margin="0,0,0,4">
+                            <Button x:Name="AskButton" Content="Ask Claude" Command="{Binding AskAiCommand}" DockPanel.Dock="Left"/>
+                            <Label x:Name="TokenCountLabel" Content="{Binding TokensUsed, StringFormat='Tokens: {0}'}"
+                                   Foreground="#636e72" DockPanel.Dock="Right" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                        </DockPanel>
+
+                        <ProgressBar x:Name="AiProgress" IsIndeterminate="{Binding IsAiWorking}"
+                                     Visibility="{Binding IsAiWorking, Converter={StaticResource BoolToVis}}"/>
+
+                        <!-- Response -->
+                        <TextBlock Text="Response" FontWeight="Bold" Margin="0,4,0,2"/>
+                        <RichTextBox x:Name="ResponseBox" Height="150" IsReadOnly="True"
+                                     Background="#1e1e1e" Foreground="#d4d4d4" BorderThickness="0"
+                                     FontFamily="Cascadia Code, Consolas" FontSize="11"
+                                     VerticalScrollBarVisibility="Auto"/>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                            <Button x:Name="CopyResponseButton" Content="Copy" Command="{Binding CopyResponseCommand}"/>
+                            <Button x:Name="InsertButton" Content="Insert as Module" Command="{Binding InsertCodeCommand}"/>
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ==================== TAB 4: QUICK ACTIONS ==================== -->
+            <TabItem Header="Actions" x:Name="ActionsTab">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="Quick Actions" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                        <WrapPanel Margin="0,0,0,8">
+                            <Button x:Name="NewModuleButton" Content="New Module" Command="{Binding NewModuleCommand}" Width="120"/>
+                            <Button x:Name="DeleteModuleButton" Content="Delete Module" Command="{Binding DeleteModuleCommand}" Width="120"/>
+                            <Button x:Name="ExportAllButton" Content="Export All" Command="{Binding ExportAllCommand}" Width="120"/>
+                            <Button x:Name="ImportButton" Content="Import Module" Command="{Binding ImportCommand}" Width="120"/>
+                            <Button x:Name="BackupButton" Content="Backup VBA" Command="{Binding BackupCommand}" Width="120"/>
+                            <Button x:Name="ProtectButton" Content="Toggle Protection" Width="120" Click="ProtectButton_Click"/>
+                        </WrapPanel>
+
+                        <TextBlock Text="Macro Security"/>
+                        <ComboBox x:Name="MacroSecurityCombo" IsEnabled="False">
+                            <ComboBoxItem Content="Disable all macros with notification" IsSelected="True"/>
+                            <ComboBoxItem Content="Enable all macros"/>
+                            <ComboBoxItem Content="Disable all macros without notification"/>
+                        </ComboBox>
+
+                        <!-- Recent actions log -->
+                        <TextBlock Text="Recent Actions" FontWeight="Bold" Margin="0,8,0,4"/>
+                        <ListView x:Name="RecentActionsList" ItemsSource="{Binding RecentActions}"
+                                  Background="#16213e" Foreground="White" Height="200" BorderThickness="0">
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Foreground="#95e1d3">
+                                        <Run Text="{Binding Timestamp, StringFormat='[{0:HH:mm:ss}]', Mode=OneWay}" Foreground="#636e72"/>
+                                        <Run Text=" "/>
+                                        <Run Text="{Binding Action, Mode=OneWay}" FontWeight="Bold"/>
+                                        <Run Text=" — "/>
+                                        <Run Text="{Binding Details, Mode=OneWay}"/>
+                                    </TextBlock>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+
+                        <Button x:Name="UndoButton" Content="Undo Last Action" Margin="0,8,0,0" IsEnabled="False"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ==================== TAB 5: SETTINGS ==================== -->
+            <TabItem Header="Settings" x:Name="SettingsTab">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="Settings" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                        <CheckBox x:Name="AutoScanCheck" Content="Scan VBA on workbook open" IsChecked="{Binding AutoScan}"/>
+                        <CheckBox x:Name="ScanOnSaveCheck" Content="Scan before save" IsChecked="{Binding ScanOnSave}"/>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,4">
+                            <TextBlock Text="Max lines to scan:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <Slider x:Name="MaxLinesToScan" Width="180" Minimum="100" Maximum="100000"
+                                    Value="{Binding MaxLinesToScan}" TickFrequency="1000" IsSnapToTickEnabled="False"/>
+                            <Label x:Name="MaxLinesLabel" Content="{Binding MaxLinesToScan}" Foreground="White" Margin="6,0,0,0"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,4,0,8">
+                            <TextBlock Text="Theme:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <ComboBox x:Name="ThemeCombo" Width="100"
+                                      ItemsSource="{Binding Themes}" SelectedItem="{Binding SelectedTheme}"/>
+                        </StackPanel>
+
+                        <Expander x:Name="AdvancedExpander" Header="Advanced Options" Foreground="White" Margin="0,4,0,0">
+                            <StackPanel Margin="16,8,0,0">
+                                <CheckBox x:Name="IgnoreCommentsCheck" Content="Ignore comments in analysis" IsChecked="{Binding IgnoreComments}"/>
+                                <CheckBox x:Name="StrictModeCheck" Content="Strict mode — flag all implicit Variants" IsChecked="{Binding StrictMode}"/>
+
+                                <Expander Header="API Settings" Foreground="White" Margin="0,8,0,0">
+                                    <StackPanel Margin="16,8,0,0">
+                                        <Expander Header="Timeouts" Foreground="White" Margin="0,4,0,0">
+                                            <StackPanel Margin="16,8,0,0">
+                                                <Expander Header="Network" Foreground="White" Margin="0,4,0,0">
+                                                    <StackPanel Margin="16,8,0,0">
+                                                        <Expander Header="Fine Tuning" Foreground="White" Margin="0,4,0,0">
+                                                            <StackPanel Margin="16,8,0,0">
+                                                                <StackPanel Orientation="Horizontal">
+                                                                    <TextBlock Text="API Timeout (s):" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                                                    <Slider x:Name="TimeoutSlider" Width="120" Minimum="5" Maximum="120"
+                                                                            Value="{Binding ApiTimeout}" TickFrequency="5"/>
+                                                                </StackPanel>
+                                                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                                                    <TextBlock Text="Max response tokens:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                                                    <Slider x:Name="MaxTokensSlider" Width="120" Minimum="256" Maximum="8192"
+                                                                            Value="{Binding MaxResponseTokens}" TickFrequency="256"/>
+                                                                </StackPanel>
+                                                                <Label x:Name="DeepLabel" Content="Deep nested setting reached" Foreground="#636e72" Margin="0,8,0,0"/>
+                                                            </StackPanel>
+                                                        </Expander>
+                                                    </StackPanel>
+                                                </Expander>
+                                            </StackPanel>
+                                        </Expander>
+                                    </StackPanel>
+                                </Expander>
+                            </StackPanel>
+                        </Expander>
+
+                        <!-- Unnamed ToggleButton for testing synthetic naming -->
+                        <ToggleButton Content="Developer Mode" IsChecked="{Binding IsDeveloperMode}"
+                                      Background="#16213e" Foreground="White" BorderBrush="#0f3460"
+                                      Margin="0,12,0,0" Padding="12,6"/>
+
+                        <Button x:Name="ResetButton" Content="Reset to Defaults" Command="{Binding ResetCommand}" Margin="0,8,0,0"/>
+
+                        <Label x:Name="VersionLabel" Content="MacroGuard v1.0" Foreground="#636e72" Margin="0,12,0,0"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+            <!-- ==================== TAB 6: PROFILER ==================== -->
+            <TabItem Header="Profiler" x:Name="ProfilerTab">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="Macro Performance Profiler" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                        <ToggleButton x:Name="ProfileToggle" Content="Enable Profiling"
+                                      IsChecked="{Binding IsProfilingEnabled}"
+                                      Background="#16213e" Foreground="White" BorderBrush="#0f3460"
+                                      Padding="12,6" Margin="0,0,0,8"/>
+
+                        <TextBlock Text="When enabled, every macro run via 'Run Macro' is timed." Foreground="#636e72" Margin="0,0,0,8"/>
+
+                        <DataGrid x:Name="PerformanceGrid" ItemsSource="{Binding PerformanceData}" AutoGenerateColumns="False"
+                                  Background="#16213e" Foreground="White" RowBackground="#16213e"
+                                  AlternatingRowBackground="#1a1a2e" GridLinesVisibility="Horizontal"
+                                  BorderThickness="0" Height="300" IsReadOnly="True"
+                                  HeadersVisibility="Column" CanUserAddRows="False">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Macro" Binding="{Binding MacroName}" Width="120"/>
+                                <DataGridTextColumn Header="Last (ms)" Binding="{Binding LastRunMs}" Width="80"/>
+                                <DataGridTextColumn Header="Avg (ms)" Binding="{Binding AvgRunMs, StringFormat=F1}" Width="80"/>
+                                <DataGridTextColumn Header="Runs" Binding="{Binding RunCount}" Width="60"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ==================== TAB 7: SNIPPETS ==================== -->
+            <TabItem Header="Snippets" x:Name="SnippetsTab">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="VBA Code Snippets Library" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                        <ListBox x:Name="SnippetList" ItemsSource="{Binding Snippets}"
+                                 SelectedItem="{Binding SelectedSnippet}"
+                                 Background="#16213e" Foreground="White" Height="200" BorderThickness="0">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel>
+                                        <TextBlock FontWeight="Bold">
+                                            <Run Text="{Binding Name, Mode=OneWay}"/>
+                                        </TextBlock>
+                                        <TextBlock Foreground="#636e72">
+                                            <Run Text="["/><Run Text="{Binding Category, Mode=OneWay}"/><Run Text="] "/>
+                                            <Run Text="{Binding Description, Mode=OneWay}"/>
+                                        </TextBlock>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <TextBlock Text="Preview" FontWeight="Bold" Margin="0,8,0,4"/>
+                        <RichTextBox x:Name="SnippetPreview" Height="150" IsReadOnly="True"
+                                     Background="#1e1e1e" Foreground="#d4d4d4" BorderThickness="0"
+                                     FontFamily="Cascadia Code, Consolas" FontSize="11"
+                                     VerticalScrollBarVisibility="Auto"/>
+
+                        <Button x:Name="InsertSnippetButton" Content="Insert Snippet as Module"
+                                Command="{Binding InsertSnippetCommand}" Margin="0,8,0,0"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ==================== TAB 8: SCHEDULER ==================== -->
+            <TabItem Header="Schedule" x:Name="SchedulerTab">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="Macro Scheduler" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                        <TextBlock Text="Trigger Type"/>
+                        <ComboBox x:Name="TriggerTypeCombo" ItemsSource="{Binding TriggerTypes}"
+                                  SelectedItem="{Binding TriggerType}" Margin="0,2,0,6"/>
+
+                        <TextBlock Text="Interval (seconds) — for Timer triggers"/>
+                        <Slider x:Name="IntervalSlider" Minimum="5" Maximum="3600"
+                                Value="{Binding IntervalSeconds}" TickFrequency="5" Margin="0,2,0,2"/>
+                        <Label Content="{Binding IntervalSeconds, StringFormat='{}{0}s'}" Foreground="#636e72"/>
+
+                        <TextBlock Text="Macro to Schedule"/>
+                        <ComboBox x:Name="ScheduledMacroCombo"
+                                  ItemsSource="{Binding FilteredModules}"
+                                  DisplayMemberPath="MacroNames[0]"
+                                  Margin="0,2,0,6"/>
+                        <TextBox x:Name="ScheduledMacroNameBox"
+                                 Text="{Binding ScheduledMacroName, UpdateSourceTrigger=PropertyChanged}"
+                                 Margin="0,0,0,6"/>
+
+                        <CheckBox x:Name="EnableScheduleCheck" Content="Enable Schedule"
+                                  IsChecked="{Binding IsScheduleEnabled}"/>
+
+                        <Button x:Name="AddScheduleButton" Content="Add Schedule"
+                                Command="{Binding AddScheduleCommand}" Margin="0,8,0,8"/>
+
+                        <TextBlock Text="Active Schedules" FontWeight="Bold" Margin="0,4,0,4"/>
+                        <DataGrid x:Name="ScheduleGrid" ItemsSource="{Binding Schedules}" AutoGenerateColumns="False"
+                                  Background="#16213e" Foreground="White" RowBackground="#16213e"
+                                  AlternatingRowBackground="#1a1a2e" GridLinesVisibility="Horizontal"
+                                  BorderThickness="0" Height="180" IsReadOnly="True"
+                                  HeadersVisibility="Column" CanUserAddRows="False">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Macro" Binding="{Binding MacroName}" Width="100"/>
+                                <DataGridTextColumn Header="Trigger" Binding="{Binding TriggerType}" Width="90"/>
+                                <DataGridTextColumn Header="Interval" Binding="{Binding IntervalSeconds, StringFormat='{}{0}s'}" Width="65"/>
+                                <DataGridCheckBoxColumn Header="On" Binding="{Binding IsEnabled}" Width="35"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ==================== TAB 9: DIFF / VERSIONS ==================== -->
+            <TabItem Header="Diff" x:Name="DiffTab">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="VBA Version Comparison" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                        <Button x:Name="SnapshotButton" Content="Take Snapshot"
+                                Command="{Binding TakeSnapshotCommand}" Margin="0,0,0,8"/>
+
+                        <TextBlock Text="Snapshots" FontWeight="Bold" Margin="0,4,0,4"/>
+                        <ListView x:Name="SnapshotList" ItemsSource="{Binding Snapshots}"
+                                  SelectedItem="{Binding SelectedSnapshot}"
+                                  Background="#16213e" Foreground="White" Height="120" BorderThickness="0"/>
+
+                        <Button x:Name="CompareButton" Content="Compare Selected vs Current"
+                                Command="{Binding CompareSnapshotCommand}" Margin="0,8,0,8"/>
+
+                        <TextBlock Text="Diff Output" FontWeight="Bold" Margin="0,4,0,4"/>
+                        <RichTextBox x:Name="DiffView" Height="250" IsReadOnly="True"
+                                     Background="#1e1e1e" Foreground="#d4d4d4" BorderThickness="0"
+                                     FontFamily="Cascadia Code, Consolas" FontSize="11"
+                                     VerticalScrollBarVisibility="Auto"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ==================== TAB 10: METRICS ==================== -->
+            <TabItem Header="Metrics" x:Name="MetricsTab">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="Code Metrics Dashboard" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                        <Button x:Name="RefreshMetricsButton" Content="Refresh Metrics"
+                                Command="{Binding RefreshMetricsCommand}" Margin="0,0,0,8"/>
+
+                        <!-- Aggregate metrics -->
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                            <TextBlock Text="Total LOC: " FontWeight="Bold"/>
+                            <Label x:Name="TotalLocLabel" Content="{Binding TotalLinesOfCode}" Foreground="#95e1d3"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                            <TextBlock Text="Comment Ratio: " FontWeight="Bold"/>
+                            <Label x:Name="CommentRatioLabel" Content="{Binding OverallCommentRatio, StringFormat='{}{0}%'}" Foreground="#fce38a"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                            <TextBlock Text="Avg Proc Length: " FontWeight="Bold"/>
+                            <Label x:Name="AvgProcLabel" Content="{Binding OverallAvgProcLength, StringFormat='{}{0} lines'}" Foreground="#95e1d3"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                            <TextBlock Text="Total Complexity: " FontWeight="Bold"/>
+                            <Label x:Name="ComplexityLabel" Content="{Binding OverallComplexity}" Foreground="#f38181"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="Dead Procedures: " FontWeight="Bold"/>
+                            <Label x:Name="DeadCodeLabel" Content="{Binding DeadProcedureCount}" Foreground="#e94560"/>
+                        </StackPanel>
+
+                        <TextBlock Text="Per-Module Metrics" FontWeight="Bold" Margin="0,4,0,4"/>
+                        <DataGrid x:Name="MetricsGrid" ItemsSource="{Binding MetricsData}" AutoGenerateColumns="False"
+                                  Background="#16213e" Foreground="White" RowBackground="#16213e"
+                                  AlternatingRowBackground="#1a1a2e" GridLinesVisibility="Horizontal"
+                                  BorderThickness="0" Height="200" IsReadOnly="True"
+                                  HeadersVisibility="Column" CanUserAddRows="False">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Module" Binding="{Binding ModuleName}" Width="90"/>
+                                <DataGridTextColumn Header="Lines" Binding="{Binding TotalLines}" Width="55"/>
+                                <DataGridTextColumn Header="Comments%" Binding="{Binding CommentRatio, StringFormat=F1}" Width="75"/>
+                                <DataGridTextColumn Header="Procs" Binding="{Binding ProcedureCount}" Width="50"/>
+                                <DataGridTextColumn Header="Avg Len" Binding="{Binding AvgProcedureLength, StringFormat=F1}" Width="60"/>
+                                <DataGridTextColumn Header="CC" Binding="{Binding CyclomaticComplexity}" Width="40"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ==================== TAB 11: DEPENDENCIES ==================== -->
+            <TabItem Header="Deps" x:Name="DependencyTab">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="Macro Dependency Graph" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                        <Button x:Name="RefreshDepsButton" Content="Analyze Dependencies"
+                                Command="{Binding RefreshDependenciesCommand}" Margin="0,0,0,8"/>
+
+                        <ListBox x:Name="DependencyList" ItemsSource="{Binding Dependencies}"
+                                 Background="#16213e" Foreground="White" Height="400" BorderThickness="0">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Foreground="#95e1d3" TextWrapping="Wrap">
+                                        <Run Text="{Binding CallerModule, Mode=OneWay}" FontWeight="Bold" Foreground="#fce38a"/>
+                                        <Run Text="."/>
+                                        <Run Text="{Binding CallerProcedure, Mode=OneWay}" FontWeight="Bold"/>
+                                        <Run Text=" calls: " Foreground="#636e72"/>
+                                        <Run Text="{Binding Callees, Mode=OneWay, Converter={x:Static local:StringJoinConverter.Instance}}"/>
+                                    </TextBlock>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ==================== TAB 12: QUICK-FIX ==================== -->
+            <TabItem Header="QuickFix" x:Name="QuickFixTab">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="Quick-Fix Templates" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                        <TextBlock Text="Run a health scan first (Health tab) to populate quick-fixes." Foreground="#636e72" Margin="0,0,0,8"/>
+
+                        <ListBox x:Name="QuickFixList" ItemsSource="{Binding QuickFixes}"
+                                 SelectedItem="{Binding SelectedQuickFix}"
+                                 Background="#16213e" Foreground="White" Height="160" BorderThickness="0">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel>
+                                        <TextBlock FontWeight="Bold">
+                                            <Run Text="{Binding Name, Mode=OneWay}"/>
+                                        </TextBlock>
+                                        <TextBlock Foreground="#636e72" Text="{Binding Description}"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <Expander x:Name="QuickFixDetailExpander" Header="Fix Preview" Foreground="White" Margin="0,8,0,0"
+                                  IsExpanded="True">
+                            <TextBox Text="{Binding QuickFixPreview, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap"
+                                     Height="120" VerticalScrollBarVisibility="Auto"
+                                     Background="#1e1e1e" Foreground="#95e1d3"
+                                     FontFamily="Cascadia Code, Consolas" FontSize="11"/>
+                        </Expander>
+
+                        <Button x:Name="ApplyQuickFixButton" Content="Apply Selected Fix"
+                                Command="{Binding ApplyQuickFixCommand}" Margin="0,8,0,0"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ==================== TAB 13: EXPORT ==================== -->
+            <TabItem Header="Export" x:Name="ExportTab">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="Export Features" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                        <TextBlock Text="Export selected module as .bas" FontWeight="Bold" Margin="0,8,0,4"/>
+                        <Button x:Name="ExportBasButton" Content="Export .bas"
+                                Command="{Binding ExportBasCommand}" Margin="0,0,0,4"/>
+
+                        <TextBlock Text="Export VBA documentation as HTML" FontWeight="Bold" Margin="0,8,0,4"/>
+                        <Button x:Name="ExportHtmlButton" Content="Export HTML Documentation"
+                                Command="{Binding ExportHtmlDocCommand}" Margin="0,0,0,4"/>
+
+                        <TextBlock Text="Export health check report as CSV" FontWeight="Bold" Margin="0,8,0,4"/>
+                        <Button x:Name="ExportCsvButton" Content="Export Health CSV"
+                                Command="{Binding ExportHealthCsvCommand}" Margin="0,0,0,4"/>
+
+                        <TextBlock Text="Export all code as single text file" FontWeight="Bold" Margin="0,8,0,4"/>
+                        <Button x:Name="ExportAllTextButton" Content="Export All Code (Text)"
+                                Command="{Binding ExportAllTextCommand}" Margin="0,0,0,4"/>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                            <TextBlock Text="Last export: " Foreground="#636e72"/>
+                            <Label x:Name="ExportPathLabel" Content="{Binding ExportPath}" Foreground="#95e1d3"/>
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+        </TabControl>
+    </Grid>
+</UserControl>

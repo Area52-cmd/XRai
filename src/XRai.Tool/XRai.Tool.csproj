@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- Pin to .NET 8 runtime. Without this, machines with .NET 10 SDK installed
+         pick up .NET 10's System.Text.Json which demands System.IO.Pipelines 10.0.0.0
+         that isn't in our self-contained publish. RollForward=LatestPatch ensures
+         we stay on 8.0.x and never accidentally load .NET 9/10 assemblies. -->
+    <RollForward>LatestPatch</RollForward>
+
+    <!-- dotnet tool packaging -->
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>xrai</ToolCommandName>
+    <PackageId>XRai.Tool</PackageId>
+    <!-- PackageVersion bumps per-build with a proper SemVer 2.0 pre-release tag.
+         Sorts correctly and clearly marks pre-GA packages. Stable Version is
+         used as the package's "base" identifier; PackageVersion overrides it
+         for the actual NuGet package id. -->
+    <Version>1.0.0</Version>
+    <PackageVersion>1.0.0-beta.$([System.DateTime]::UtcNow.ToString('yyyyMMddHHmm'))</PackageVersion>
+    <Authors>XRai</Authors>
+    <Description>XRai — AI-powered Excel automation CLI. Gives Claude Code eyes and hands inside live Excel.</Description>
+    <PackageProjectUrl>https://github.com/xrai-tool/xrai</PackageProjectUrl>
+    <PackageTags>excel;automation;claude;ai;com-interop;excel-dna</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+
+    <!-- AssemblyFileVersion bumps per build (UtcNow) so every build produces a
+         Tool binary with a distinct file stamp. Without this, incremental builds
+         that only touch XRai.Hooks (which Tool doesn't reference) leave
+         XRai.Tool.exe's LastWriteTime unchanged, creating the "Hooks bumped but
+         Tool is stale" confusion downstream. -->
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.$([System.DateTime]::UtcNow.ToString('MMdd')).$([System.DateTime]::UtcNow.ToString('HHmm'))</FileVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Build stamp baked into the assembly as metadata, surfaced in every
+         pane.click response via command_dispatcher_build so consumers can
+         verify which CLI binary actually handled a command. -->
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>XRaiToolBuildTimestamp</_Parameter1>
+      <_Parameter2>$([System.DateTime]::UtcNow.ToString('o'))</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XRai.Core\XRai.Core.csproj" />
+    <ProjectReference Include="..\XRai.Com\XRai.Com.csproj" />
+    <ProjectReference Include="..\XRai.HooksClient\XRai.HooksClient.csproj" />
+    <ProjectReference Include="..\XRai.UI\XRai.UI.csproj" />
+    <ProjectReference Include="..\XRai.Vision\XRai.Vision.csproj" />
+  </ItemGroup>
+
+</Project>

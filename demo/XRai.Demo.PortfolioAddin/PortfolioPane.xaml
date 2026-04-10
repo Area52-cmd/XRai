@@ -1,0 +1,135 @@
+<UserControl x:Class="XRai.Demo.PortfolioAddin.PortfolioPane"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="#1a1a2e" Foreground="White" Width="380">
+    <UserControl.Resources>
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontSize" Value="12"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#16213e"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="#0f3460"/>
+            <Setter Property="Padding" Value="4,2"/>
+        </Style>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#e94560"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="12,6"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="#16213e"/>
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+    </UserControl.Resources>
+
+    <TabControl x:Name="MainTabs" Background="#1a1a2e" Foreground="White">
+        <!-- Holdings Tab -->
+        <TabItem Header="Holdings" x:Name="HoldingsTab">
+            <StackPanel Margin="8">
+                <DockPanel Margin="0,0,0,8">
+                    <TextBox x:Name="PortfolioNameBox" Text="{Binding PortfolioName, UpdateSourceTrigger=PropertyChanged}" DockPanel.Dock="Left" Width="200"/>
+                    <Button x:Name="RefreshButton" Content="Refresh Prices" Click="RefreshButton_Click" DockPanel.Dock="Right" HorizontalAlignment="Right"/>
+                </DockPanel>
+
+                <DataGrid x:Name="HoldingsGrid" ItemsSource="{Binding Holdings}" AutoGenerateColumns="False"
+                          Background="#16213e" Foreground="White" RowBackground="#16213e" AlternatingRowBackground="#1a1a2e"
+                          GridLinesVisibility="Horizontal" BorderThickness="0" Height="200" IsReadOnly="True"
+                          HeadersVisibility="Column" CanUserAddRows="False">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Symbol" Binding="{Binding Symbol}" Width="60"/>
+                        <DataGridTextColumn Header="Qty" Binding="{Binding Quantity}" Width="45"/>
+                        <DataGridTextColumn Header="Price" Binding="{Binding CurrentPrice, StringFormat=C2}" Width="70"/>
+                        <DataGridTextColumn Header="Value" Binding="{Binding MarketValue, StringFormat=C0}" Width="80"/>
+                        <DataGridTextColumn Header="P&amp;L" Binding="{Binding PnL, StringFormat=C0}" Width="70"/>
+                        <DataGridTextColumn Header="%" Binding="{Binding PnLPercent, StringFormat=F1}" Width="50"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+
+                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                    <TextBlock Text="Total Value: " FontWeight="Bold"/>
+                    <Label x:Name="TotalValueLabel" Content="{Binding TotalValue, StringFormat=C0}" Foreground="#00cec9" FontWeight="Bold" FontSize="14"/>
+                    <TextBlock Text="  P&amp;L: " FontWeight="Bold" Margin="12,0,0,0"/>
+                    <Label x:Name="TotalPnLLabel" Content="{Binding TotalPnL, StringFormat=C0}" Foreground="#00b894" FontWeight="Bold"/>
+                </StackPanel>
+
+                <TextBlock Text="{Binding LastUpdated, StringFormat='Last updated: {0}'}" Foreground="#636e72" Margin="0,4,0,0"/>
+            </StackPanel>
+        </TabItem>
+
+        <!-- Trade Tab -->
+        <TabItem Header="Trade" x:Name="TradeTab">
+            <StackPanel Margin="8">
+                <TextBlock Text="Place Order" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                <TextBlock Text="Symbol"/>
+                <TextBox x:Name="SymbolBox" Text="{Binding SearchSymbol, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"/>
+
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                    <RadioButton x:Name="BuyRadio" Content="Buy" IsChecked="True" Foreground="White" Margin="0,0,16,0" GroupName="Side"/>
+                    <RadioButton x:Name="SellRadio" Content="Sell" Foreground="White" GroupName="Side"/>
+                </StackPanel>
+
+                <TextBlock Text="Order Type"/>
+                <ComboBox x:Name="OrderTypeCombo" ItemsSource="{Binding OrderTypes}" SelectedItem="{Binding OrderType}" Margin="0,2,0,8"/>
+
+                <TextBlock Text="Quantity"/>
+                <TextBox x:Name="QuantityBox" Text="{Binding OrderQuantity, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"/>
+
+                <TextBlock Text="Limit Price"/>
+                <TextBox x:Name="LimitPriceBox" Text="{Binding LimitPrice, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"/>
+
+                <TextBlock Text="Date"/>
+                <DatePicker x:Name="TradeDatePicker" Margin="0,2,0,8"/>
+
+                <TextBlock Text="Risk Tolerance"/>
+                <Slider x:Name="RiskSlider" Value="{Binding RiskTolerance}" Minimum="0" Maximum="100" Margin="0,2,0,8"/>
+
+                <Button x:Name="ExecuteTradeButton" Content="Execute Trade" Click="ExecuteTrade_Click" Margin="0,8,0,0" FontSize="14"/>
+            </StackPanel>
+        </TabItem>
+
+        <!-- History Tab -->
+        <TabItem Header="History" x:Name="HistoryTab">
+            <StackPanel Margin="8">
+                <TextBlock Text="Trade History" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+                <ListView x:Name="TradeHistoryList" ItemsSource="{Binding TradeHistory}"
+                          Background="#16213e" Foreground="White" Height="300" BorderThickness="0"/>
+            </StackPanel>
+        </TabItem>
+
+        <!-- Settings Tab -->
+        <TabItem Header="Settings" x:Name="SettingsTab">
+            <StackPanel Margin="8">
+                <TextBlock Text="Settings" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                <TextBlock Text="Account"/>
+                <ComboBox x:Name="AccountCombo" ItemsSource="{Binding Accounts}" SelectedItem="{Binding SelectedAccount}" Margin="0,2,0,8"/>
+
+                <CheckBox x:Name="AutoRefreshCheck" Content="Auto-refresh prices" IsChecked="{Binding IsAutoRefresh}" Margin="0,8,0,4"/>
+
+                <Expander x:Name="AdvancedExpander" Header="Advanced Options" Foreground="White" Margin="0,8,0,0">
+                    <StackPanel Margin="16,8,0,0">
+                        <CheckBox x:Name="AlertsCheck" Content="Enable price alerts" Foreground="White" Margin="0,4"/>
+                        <CheckBox x:Name="DarkModeCheck" Content="Dark mode" IsChecked="True" Foreground="White" Margin="0,4"/>
+                    </StackPanel>
+                </Expander>
+
+                <ProgressBar x:Name="RefreshProgress" Value="{Binding Progress}" Maximum="100" Height="20" Margin="0,16,0,4"
+                             Background="#16213e" Foreground="#e94560"/>
+                <Label x:Name="StatusLabel" Content="{Binding StatusMessage}" Foreground="#636e72"/>
+
+                <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+                    <Button x:Name="ConnectButton" Content="Connect" Click="Connect_Click" Margin="0,0,8,0"/>
+                    <Button x:Name="DisconnectButton" Content="Disconnect" Click="Disconnect_Click"/>
+                </StackPanel>
+            </StackPanel>
+        </TabItem>
+    </TabControl>
+</UserControl>

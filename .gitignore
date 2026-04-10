@@ -1,0 +1,55 @@
+## ── Build output ─────────────────────────────────────────────
+bin/
+obj/
+out/
+publish/
+dist/
+*.nupkg
+*.snupkg
+*.xll
+*-packed.xll
+*.runtimeconfig.dev.json
+artifacts/
+
+## ── Visual Studio / Rider / VS Code ──────────────────────────
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.vspscc
+*.swp
+
+## ── NuGet ────────────────────────────────────────────────────
+packages/
+*.nuget.props
+*.nuget.targets
+.nuget/
+
+## ── .NET ─────────────────────────────────────────────────────
+project.lock.json
+project.fragment.lock.json
+*.pdb
+*.mdb
+
+## ── Logs + temp ──────────────────────────────────────────────
+*.log
+*.tlog
+*.binlog
+TestResults/
+
+## ── OS junk ──────────────────────────────────────────────────
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+## ── Scaffold test output ─────────────────────────────────────
+TestAddin/
+test-addin*/
+scaffold-test*/
+
+## ── Claude Code per-user state ───────────────────────────────
+.claude/settings.local.json

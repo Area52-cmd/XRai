@@ -1,0 +1,280 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using ModelContextProtocol;
+using XRai.Core;
+using XRai.Com;
+using XRai.HooksClient;
+using XRai.Mcp;
+using XRai.UI;
+using XRai.Vision;
+
+// Handle "setup" subcommand before starting the MCP host
+if (args.Length > 0 && args[0].Equals("setup", StringComparison.OrdinalIgnoreCase))
+{
+    XRai.Mcp.SetupCommand.Run();
+    return;
+}
+
+var builder = Host.CreateApplicationBuilder(args);
+
+// MCP protocol uses stdout — all logging goes to stderr
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
+
+// Register XRai infrastructure as singletons
+builder.Services.AddSingleton<StaComWorker>();
+builder.Services.AddSingleton<ExcelSession>();
+builder.Services.AddSingleton<HookConnection>();
+builder.Services.AddSingleton<Win32DialogDriver>();
+
+builder.Services.AddSingleton(sp =>
+{
+    var events = new EventStream(Console.Error);
+    var router = new CommandRouter(events);
+    var staWorker = sp.GetRequiredService<StaComWorker>();
+    var session = sp.GetRequiredService<ExcelSession>();
+    var hooks = sp.GetRequiredService<HookConnection>();
+    var dialogDriver = sp.GetRequiredService<Win32DialogDriver>();
+
+    router.SetStaInvoker((func, timeout) => staWorker.Invoke(func, timeout));
+    router.SetTimeoutDiagnostics(dialogDriver);
+
+    // === Connection commands (replicated from XRai.Tool Program.cs) ===
+    router.Register("wait", _ =>
+    {
+        session.WaitAndAttach();
+        TryConnectHooks(hooks);
+        var state = session.ProbeWorkbookState();
+        return Response.Ok(new
+        {
+            attached = true,
+            version = session.ExcelVersion,
+            hooks = hooks.IsConnected,
+            has_workbook = state.HasWorkbook,
+            active_workbook = state.Name,
+            workbook_count = state.Count
+        });
+    });
+
+    router.Register("attach", cmdArgs =>
+    {
+        var attachPid = cmdArgs["pid"]?.GetValue<int>();
+        session.Attach(attachPid);
+        TryConnectHooks(hooks);
+        var state = session.ProbeWorkbookState();
+        return Response.Ok(new
+        {
+            attached = true,
+            version = session.ExcelVersion,
+            hooks = hooks.IsConnected,
+            has_workbook = state.HasWorkbook,
+            active_workbook = state.Name,
+            workbook_count = state.Count
+        });
+    });
+
+    router.Register("detach", _ =>
+    {
+        hooks.Disconnect();
+        session.Detach();
+        return Response.Ok(new { detached = true });
+    });
+
+    router.Register("status", _ =>
+    {
+        if (!session.IsAttached)
+        {
+            return Response.Ok(new
+            {
+                attached = false,
+                version = (string?)null,
+                hooks = false,
+                hint = "Not attached. Call {\"cmd\":\"attach\"} or {\"cmd\":\"wait\"} first."
+            });
+        }
+        var state = session.ProbeWorkbookState();
+        return Response.Ok(new
+        {
+            attached = true,
+            version = session.ExcelVersion,
+            hooks = hooks.IsConnected,
+            hooks_pipe = hooks.PipeName,
+            has_workbook = state.HasWorkbook,
+            active_workbook = state.Name,
+            workbook_count = state.Count,
+            hint = state.HasWorkbook
+                ? (string?)null
+                : "Excel is on start screen with no workbook. Call {\"cmd\":\"ensure.workbook\"} or open a workbook first."
+        });
+    });
+
+    router.Register("ensure.workbook", _ =>
+    {
+        var state = session.ProbeWorkbookState();
+        if (state.HasWorkbook)
+            return Response.Ok(new { already_open = true, name = state.Name, created = false });
+
+        var wb = session.EnsureWorkbook();
+        string name = wb.Name;
+        System.Runtime.InteropServices.Marshal.ReleaseComObject(wb);
+        return Response.Ok(new { already_open = false, name, created = true });
+    });
+
+    router.Register("connect", cmdArgs =>
+    {
+        var timeoutMs = cmdArgs["timeout"]?.GetValue<int>() ?? 30000;
+        try
+        {
+            if (!session.IsAttached)
+                session.WaitAndAttach(timeoutMs);
+        }
+        catch (Exception ex)
+        {
+            return Response.Error($"Failed to attach: {ex.Message}");
+        }
+
+        var state = session.ProbeWorkbookState();
+        bool createdWorkbook = false;
+        if (!state.HasWorkbook)
+        {
+            try
+            {
+                var wb = session.EnsureWorkbook();
+                System.Runtime.InteropServices.Marshal.ReleaseComObject(wb);
+                createdWorkbook = true;
+                state = session.ProbeWorkbookState();
+            }
+            catch (Exception ex)
+            {
+                return Response.Error($"Attached but could not create workbook: {ex.Message}");
+            }
+        }
+
+        TryConnectHooks(hooks);
+
+        return Response.Ok(new
+        {
+            attached = true,
+            version = session.ExcelVersion,
+            hooks = hooks.IsConnected,
+            hooks_pipe = hooks.PipeName,
+            active_workbook = state.Name,
+            workbook_count = state.Count,
+            created_workbook = createdWorkbook
+        });
+    });
+
+    // === Core COM operations ===
+    new CellOps(session).Register(router);
+    new SheetOps(session).Register(router);
+    new CalcOps(session).Register(router);
+    new WorkbookOps(session, dialogDriver).Register(router);
+
+    // === Expanded COM operations ===
+    new LayoutOps(session).Register(router);
+    new DataOps(session).Register(router);
+    new FormatOps(session).Register(router);
+    new ChartOps(session).Register(router);
+    new SparklineOps(session).Register(router);
+    new TableOps(session).Register(router);
+    new FilterOps(session).Register(router);
+    new PivotOps(session).Register(router);
+    new PrintOps(session).Register(router);
+    new WindowOps(session).Register(router);
+    new ShapeOps(session).Register(router);
+    new AdvancedOps(session).Register(router);
+    new PowerQueryOps(session).Register(router);
+    new VbaOps(session).Register(router);
+    new SlicerOps(session).Register(router);
+    new ConnectionOps(session).Register(router);
+
+    // === Desktop automation (app-agnostic) ===
+    new DesktopOps().Register(router);
+    new AppAttachOps().Register(router);
+
+    // === Hooks ===
+    new PaneClient(hooks).Register(router);
+    new ModelClient(hooks).Register(router);
+
+    // === FlaUI + Vision ===
+    new RibbonDriver(dialogDriver).Register(router);
+    dialogDriver.Register(router);
+    new FileDialogDriver().Register(router);
+    var capture = new Capture();
+    capture.SetComHwndProvider(() =>
+    {
+        try { return session.IsAttached ? (nint)session.App.Hwnd : null; }
+        catch { return null; }
+    });
+    capture.Register(router);
+    new DiffOps(capture).Register(router);
+    new OcrOps().Register(router);
+
+    // === Intelligent Waits ===
+    new WaitOps().Register(router);
+
+    // === Test Reporting + Assertions ===
+    new TestReporter().Register(router);
+    new AssertOps(router).Register(router);
+
+    // === Reload + Meta ===
+    new ReloadOrchestrator(session, hooks).Register(router);
+
+    // === kill-excel as JSON command ===
+    router.Register("excel.kill", _ =>
+    {
+        hooks.Disconnect();
+        try { session.Detach(); } catch { }
+
+        var procs = System.Diagnostics.Process.GetProcessesByName("EXCEL");
+        var killed = new List<int>();
+        foreach (var p in procs)
+        {
+            try
+            {
+                p.Kill(entireProcessTree: true);
+                p.WaitForExit(5000);
+                killed.Add(p.Id);
+            }
+            catch { }
+        }
+        Thread.Sleep(500);
+        var remaining = System.Diagnostics.Process.GetProcessesByName("EXCEL").Length;
+        return Response.Ok(new { killed_pids = killed, killed_count = killed.Count, remaining });
+    });
+
+    // === Introspection commands ===
+    router.Register("help", _ =>
+    {
+        var commands = router.RegisteredCommands.ToArray();
+        return Response.Ok(new { command_count = commands.Length, commands });
+    });
+
+    router.Register("commands", _ =>
+    {
+        return Response.Ok(new { commands = router.RegisteredCommands.ToArray() });
+    });
+
+    return router;
+});
+
+// Register MCP server with stdio transport and discover tools from this assembly
+builder.Services
+    .AddMcpServer()
+    .WithStdioServerTransport()
+    .WithToolsFromAssembly();
+
+await builder.Build().RunAsync();
+
+// === Helpers ===
+static void TryConnectHooks(HookConnection hooks)
+{
+    try
+    {
+        var processes = System.Diagnostics.Process.GetProcessesByName("EXCEL");
+        if (processes.Length > 0)
+            hooks.Connect(processes[0].Id, 2000);
+    }
+    catch { /* Hooks are optional */ }
+}

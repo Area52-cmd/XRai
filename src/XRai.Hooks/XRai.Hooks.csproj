@@ -1,0 +1,89 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- NuGet packaging -->
+    <PackageId>XRai.Hooks</PackageId>
+    <!--
+      PackageVersion bumps AUTOMATICALLY on every build to the current UTC timestamp.
+      Format: 1.0.0-beta.{yyyyMMddHHmm} — proper SemVer 2.0 pre-release identifier
+      that sorts correctly and clearly marks pre-GA packages. Consumers using
+      Version="1.0.*" in their PackageReference always pull the latest XRai.Hooks
+      on rebuild (the wildcard matches the stable 1.0.* portion, including
+      pre-release builds). This fixes the "stale NuGet cache" problem where
+      consumer add-ins kept loading a stale XRai.Hooks.dll because their cached
+      1.0.0 package was pinned even after we shipped fixes upstream.
+
+      AssemblyVersion stays stable (strongly-typed, each component UInt16-bounded).
+      FileVersion carries build metadata in format 1.0.MMdd.HHmm.
+    -->
+    <PackageVersion>1.0.0-beta.$([System.DateTime]::UtcNow.ToString('yyyyMMddHHmm'))</PackageVersion>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.$([System.DateTime]::UtcNow.ToString('MMdd')).$([System.DateTime]::UtcNow.ToString('HHmm'))</FileVersion>
+    <Authors>XRai</Authors>
+    <Description>XRai Hooks — drop into your Excel-DNA add-in to expose task pane controls, ViewModels, and UDFs to the XRai CLI for AI-driven testing and automation.</Description>
+    <PackageTags>excel;excel-dna;hooks;automation;testing;wpf;named-pipe</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <IsPackable>true</IsPackable>
+
+    <!-- Don't include ExcelDna build targets in consuming projects -->
+    <ExcelDnaCreate32BitAddIn>false</ExcelDnaCreate32BitAddIn>
+    <ExcelDnaCreate64BitAddIn>false</ExcelDnaCreate64BitAddIn>
+    <ExcelDnaPackIsEnabled>false</ExcelDnaPackIsEnabled>
+  </PropertyGroup>
+
+  <!-- Suppress the implicit global using for System.Windows.Forms so it doesn't
+       collide with WPF namespaces (Button, TextBox, Label, etc.). WinForms types
+       are imported explicitly only in WinFormsAdapter.cs and WinFormsDiscovery.cs. -->
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ExcelDna.Integration" Version="1.9.0" />
+  </ItemGroup>
+
+  <!-- XRai.Core is referenced for the PipeAuth helper. PrivateAssets=all keeps
+       the reference out of the transitive NuGet dependency graph so consumer
+       add-ins don't end up with a surprise package reference on XRai.Core.
+       BUT: the XRai.Core.dll is still required at runtime, so we explicitly
+       pack it into the lib folder alongside XRai.Hooks.dll below. -->
+  <ItemGroup>
+    <ProjectReference Include="..\XRai.Core\XRai.Core.csproj">
+      <PrivateAssets>all</PrivateAssets>
+    </ProjectReference>
+  </ItemGroup>
+
+  <!-- CRITICAL: ship XRai.Core.dll inside the NuGet package's lib folder.
+       Without this, consuming add-ins get a FileNotFoundException on
+       Pilot.Start() because XRai.Hooks.dll calls into XRai.Core at runtime
+       and the assembly is nowhere on the probe path. The package path uses
+       $(NuGetPackageFolderTfm) so it matches whatever TFM moniker NuGet
+       uses for net8.0-windows (e.g. net8.0-windows7.0), matching the
+       location where XRai.Hooks.dll itself lives in the package. -->
+  <PropertyGroup>
+    <NuGetPackageFolderTfm Condition="'$(NuGetPackageFolderTfm)' == ''">net8.0-windows7.0</NuGetPackageFolderTfm>
+  </PropertyGroup>
+  <Target Name="IncludeReferencedProjectsInPackage" BeforeTargets="_GetPackageFiles">
+    <ItemGroup>
+      <_PackageFiles Include="$(OutputPath)XRai.Core.dll"
+                     BuildAction="None"
+                     PackagePath="lib/$(NuGetPackageFolderTfm)/" />
+    </ItemGroup>
+  </Target>
+
+  <!-- Embed the build timestamp into an assembly attribute so runtime can
+       report it via pane.status for the hooks-version-check mechanism. -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>XRaiBuildTimestamp</_Parameter1>
+      <_Parameter2>$([System.DateTime]::UtcNow.ToString('o'))</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+</Project>

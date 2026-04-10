@@ -1,0 +1,10 @@
+{
+  "name": "xrai",
+  "description": "XRai — AI-powered Windows desktop application development kit. 211 commands for Excel, WPF, WinForms.",
+  "packages": [{
+    "registry_name": "nuget",
+    "name": "XRai.Mcp",
+    "version": "1.0.0",
+    "runtime": {"platforms": ["win-x64"], "requires_runtime": false}
+  }]
+}
