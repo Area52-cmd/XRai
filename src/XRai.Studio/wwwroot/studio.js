@@ -103,9 +103,21 @@ async function savePreferences() {
 }
 
 async function loadIdes() {
+  state.idesError = null;
   try {
-    state.ides = await fetchJson("/ides");
-  } catch {
+    const res = await fetch("/ides");
+    if (!res.ok) {
+      state.idesError = `HTTP ${res.status} from /ides`;
+      if (res.status === 401) {
+        state.idesError = "Session expired (401). This browser tab is for a previous daemon — close it and open the URL printed when you ran `xrai --studio`.";
+      }
+      state.ides = [];
+      renderIdeChip();
+      return;
+    }
+    state.ides = await res.json();
+  } catch (err) {
+    state.idesError = `Network error fetching /ides: ${err}`;
     state.ides = [];
   }
   renderIdeChip();
@@ -163,13 +175,46 @@ function maybeShowStartupOverlay() {
 }
 
 async function showStartupOverlay() {
-  // Refresh the IDE list every time the overlay opens so "running"
-  // is current (the user may have launched/closed an IDE since boot).
   await loadIdes();
 
   const overlay = $("#startup-overlay");
   const choices = $("#ide-choices");
   choices.innerHTML = "";
+
+  // If we couldn't fetch /ides or the daemon returned an empty list,
+  // show a prominent error message + a Refresh button so the user
+  // isn't stuck staring at a silent empty box with a disabled Continue.
+  if (state.idesError || state.ides.length === 0) {
+    const err = document.createElement("div");
+    err.className = "ide-choices-error";
+    const msg = state.idesError
+      || "No editors detected on this machine.";
+    err.innerHTML = `
+      <div class="ide-error-icon">⚠</div>
+      <div class="ide-error-body">
+        <div class="ide-error-title">Can't load your editors</div>
+        <div class="ide-error-detail">${escapeHtml(msg)}</div>
+        <div class="ide-error-hint">
+          If this is a stale browser tab from an earlier daemon, close it and
+          re-open the URL printed by <code>xrai --studio</code>. Otherwise
+          click Refresh to try again.
+        </div>
+      </div>
+    `;
+    choices.appendChild(err);
+    const refreshBtn = document.createElement("button");
+    refreshBtn.className = "btn btn-ghost";
+    refreshBtn.textContent = "Refresh";
+    refreshBtn.style.marginTop = "8px";
+    refreshBtn.addEventListener("click", async () => {
+      await showStartupOverlay();
+    });
+    choices.appendChild(refreshBtn);
+    state.pendingIdeSelection = null;
+    updateContinueButton();
+    overlay.classList.remove("hidden");
+    return;
+  }
 
   const installedIdes = state.ides.filter(i => i.installed);
   const hasMultipleInstalled = installedIdes.length > 1;

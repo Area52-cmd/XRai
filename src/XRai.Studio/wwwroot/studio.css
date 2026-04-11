@@ -832,6 +832,39 @@ code {
   margin-bottom: 22px;
 }
 
+.ide-choices-error {
+  display: flex;
+  gap: 14px;
+  padding: 16px;
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid var(--bad);
+  border-radius: 10px;
+  color: var(--text);
+}
+.ide-error-icon {
+  font-size: 22px;
+  color: var(--bad);
+  line-height: 1;
+}
+.ide-error-body { flex: 1; }
+.ide-error-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--bad);
+  margin-bottom: 6px;
+}
+.ide-error-detail {
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+.ide-error-hint {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
 .ide-choice {
   display: grid;
   grid-template-columns: 36px 1fr auto;
