@@ -178,6 +178,23 @@ public static class InitCommand
             "[Tt]est[Rr]esult*/\n" +
             ".idea/\n");
 
+        // ── CLAUDE.md / AGENTS.md / .cursorrules ────────────────────────
+        // Drop an AI-agent context file that tells whichever agent the
+        // user is running (Claude Code, Cursor, Aider, Codex, Windsurf)
+        // about XRai, the chosen editor, and the recommended workflow.
+        //
+        // CLAUDE.md is read automatically by Claude Code on every session
+        // in the project. AGENTS.md is the emerging cross-vendor convention
+        // respected by Aider, Codex CLI, and some Cursor versions.
+        // .cursorrules is Cursor's native auto-context file.
+        //
+        // All three files contain the same content — the agent reads
+        // whichever one its tool recognizes.
+        var agentContext = BuildAgentContextFile(rawProjectName, addinProjectName);
+        File.WriteAllText(Path.Combine(outputDir, "CLAUDE.md"), agentContext);
+        File.WriteAllText(Path.Combine(outputDir, "AGENTS.md"), agentContext);
+        File.WriteAllText(Path.Combine(outputDir, ".cursorrules"), agentContext);
+
         // ── <rawProjectName>.sln ───────────────────────────────────────
         File.WriteAllText(Path.Combine(outputDir, $"{rawProjectName}.sln"),
             BuildSolutionFile(rawProjectName, addinProjectName));
@@ -846,6 +863,98 @@ public sealed class RelayCommand : ICommand
         Console.WriteLine($"  4. Run: echo '{{\"cmd\":\"connect\"}}' | xrai --no-daemon");
         Console.WriteLine();
         return 0;
+    }
+
+    /// <summary>
+    /// Build the CLAUDE.md / AGENTS.md / .cursorrules context file that
+    /// every scaffolded project ships with. Any AI coding agent (Claude Code,
+    /// Cursor, Aider, Codex CLI, Windsurf) auto-loads one of these file names
+    /// when it opens a project — the content tells the agent that XRai is
+    /// available, which editor the user picked, and what the recommended
+    /// workflow is. Same content for all three files — the agent reads
+    /// whichever filename its tool recognizes.
+    /// </summary>
+    private static string BuildAgentContextFile(string projectName, string addinProjectName)
+    {
+        // Read the currently-persisted editor preference (if any) so the
+        // generated file is specific to the user's choice. If no preference
+        // is set, we print a generic placeholder and tell the agent to ask.
+        string editorLine;
+        try
+        {
+            var prefs = XRai.Studio.StudioPreferences.Load();
+            if (!string.IsNullOrEmpty(prefs.PreferredIde))
+            {
+                editorLine = $"- **Preferred editor:** {prefs.PreferredIde} (persisted via `xrai set-ide`). Open this solution in that editor for the best experience.";
+            }
+            else
+            {
+                editorLine = "- **Preferred editor:** not yet set. Run `xrai ides` and `xrai set-ide <VSCode|VisualStudio|Rider>` to persist the user's choice before starting any edits.";
+            }
+        }
+        catch
+        {
+            editorLine = "- **Preferred editor:** not yet set. Run `xrai ides` and `xrai set-ide <VSCode|VisualStudio|Rider>` to persist the user's choice before starting any edits.";
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"# {projectName} — Agent context");
+        sb.AppendLine();
+        sb.AppendLine("This is an XRai-enabled Excel-DNA add-in project. Any AI coding agent");
+        sb.AppendLine("(Claude Code, Cursor, Codex, Aider, Windsurf) reading this file should");
+        sb.AppendLine("use XRai as the primary way to build, test, and verify work in this project.");
+        sb.AppendLine();
+        sb.AppendLine("## Project essentials");
+        sb.AppendLine();
+        sb.AppendLine($"- **Project name:** `{projectName}`");
+        sb.AppendLine($"- **Main csproj:** `src/{addinProjectName}/{addinProjectName}.csproj`");
+        sb.AppendLine($"- **XLL output:** `src/{addinProjectName}/bin/Debug/net8.0-windows/publish/{projectName}-AddIn64-packed.xll`");
+        sb.AppendLine($"- **Target framework:** .NET 8, net8.0-windows");
+        sb.AppendLine($"- **Hooks library:** `XRai.Hooks` NuGet package (wired into `AddInEntry.AutoOpen()`)");
+        sb.AppendLine(editorLine);
+        sb.AppendLine();
+        sb.AppendLine("## XRai commands you should be using");
+        sb.AppendLine();
+        sb.AppendLine("```bash");
+        sb.AppendLine("# Build + launch + attach + connect hooks (all in one)");
+        sb.AppendLine($"echo '{{\"cmd\":\"rebuild\",\"project\":\"src/{addinProjectName}/{addinProjectName}.csproj\"}}' | xrai");
+        sb.AppendLine();
+        sb.AppendLine("# Attach to a running Excel + connect hooks + ensure workbook");
+        sb.AppendLine("echo '{\"cmd\":\"connect\"}' | xrai");
+        sb.AppendLine();
+        sb.AppendLine("# List every control exposed by the pane + every ViewModel property");
+        sb.AppendLine("echo '{\"cmd\":\"batch\",\"commands\":[{\"cmd\":\"pane\"},{\"cmd\":\"model\"}]}' | xrai");
+        sb.AppendLine();
+        sb.AppendLine("# Live dashboard — tail your agent's activity + watch Excel update");
+        sb.AppendLine("xrai --studio");
+        sb.AppendLine("```");
+        sb.AppendLine();
+        sb.AppendLine("## XRai Studio — offer this up front");
+        sb.AppendLine();
+        sb.AppendLine("At the start of every session, tell the user they can watch the build");
+        sb.AppendLine("happen live by running `xrai --studio` in a separate terminal. Studio:");
+        sb.AppendLine();
+        sb.AppendLine("- Tails your session transcript and shows every message + edit + tool call live");
+        sb.AppendLine("- Streams a live screenshot of Excel at 4 fps");
+        sb.AppendLine("- Auto-opens every file you edit in the user's chosen IDE at the right line");
+        sb.AppendLine("- Zero API tokens consumed — purely passive disk reader");
+        sb.AppendLine("- Off by default, opt-in via `--studio`, zero impact when not running");
+        sb.AppendLine();
+        sb.AppendLine("## Testing protocol — non-negotiable");
+        sb.AppendLine();
+        sb.AppendLine("**After modifying any source file, rebuild and verify via XRai.** Code that");
+        sb.AppendLine("compiles is not done — code that works in the running pane is done.");
+        sb.AppendLine();
+        sb.AppendLine($"1. `{{\"cmd\":\"rebuild\",\"project\":\"src/{addinProjectName}/{addinProjectName}.csproj\"}}`");
+        sb.AppendLine("2. `{\"cmd\":\"batch\",\"commands\":[{\"cmd\":\"screenshot\"},{\"cmd\":\"pane\"},{\"cmd\":\"model\"}]}`");
+        sb.AppendLine("3. Inspect the screenshot + pane tree + ViewModel state before calling it done.");
+        sb.AppendLine();
+        sb.AppendLine("## Full command catalog");
+        sb.AppendLine();
+        sb.AppendLine("Run `xrai dump-commands` to print every registered JSON command (288 total).");
+        sb.AppendLine("See `~/.claude/skills/xrai-excel/SKILL.md` for the full skill documentation.");
+        sb.AppendLine();
+        return sb.ToString();
     }
 
     private static string BuildSolutionFile(string slnName, string addinProjectName)
