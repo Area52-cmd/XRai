@@ -167,6 +167,43 @@ if (Test-Path $mcpProj) {
 
 Write-Host "  Installed to: $dest" -ForegroundColor Green
 
+# ── Drop an xrai.cmd shim so `xrai ...` works from any shell once the
+#    bin directory is on PATH. The shim forwards all args to the real exe.
+#    Using a .cmd file (not a .bat) so PowerShell execution-policy rules
+#    don't apply — .cmd is treated as native by cmd.exe / PowerShell both.
+$shimPath = "$dest/bin/xrai.cmd"
+$shimContent = @"
+@echo off
+"%~dp0XRai.Tool.exe" %*
+"@
+Set-Content -Path $shimPath -Value $shimContent -Encoding ASCII -NoNewline
+Write-Host "  Shim:           xrai.cmd -> XRai.Tool.exe" -ForegroundColor Green
+
+# ── Add the bin directory to the user PATH if not already on it, so
+#    plain `xrai --studio` works from any new PowerShell / cmd.exe shell.
+#    Existing shells won't pick it up until they're restarted — we print
+#    a hint about that.
+$binDir = "$dest\bin"
+$userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+$pathSegments = $userPath -split ';' | Where-Object { $_ }
+$alreadyOnPath = $pathSegments -contains $binDir
+
+if ($alreadyOnPath) {
+    Write-Host "  PATH:           already contains $binDir" -ForegroundColor Green
+} else {
+    try {
+        $newPath = if ($userPath) { "$userPath;$binDir" } else { $binDir }
+        [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
+        Write-Host "  PATH:           added $binDir to user PATH" -ForegroundColor Green
+        Write-Host "                  (restart your shell for xrai to be found)" -ForegroundColor DarkYellow
+    } catch {
+        $errMsg = $_.Exception.Message
+        Write-Host "  PATH:           WARNING - could not add to user PATH: $errMsg" -ForegroundColor Yellow
+        Write-Host "                  Run this manually in PowerShell:" -ForegroundColor DarkYellow
+        Write-Host ('                  [Environment]::SetEnvironmentVariable("PATH", $env:PATH + ";" + "' + $binDir + '", "User")') -ForegroundColor DarkGray
+    }
+}
+
 # Verify
 $toolExe = Get-Item "$dest/bin/XRai.Tool.exe"
 $hooksPkg = Get-ChildItem "$dest/packages/*.nupkg" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -177,6 +214,9 @@ Write-Host ""
 Write-Host "  ===============================================" -ForegroundColor Cyan
 Write-Host "    Build + install complete!" -ForegroundColor Green
 Write-Host "  ===============================================" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  Run `xrai --studio` from any new terminal." -ForegroundColor DarkGray
+Write-Host "  (existing terminals need a restart to see the PATH change)" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "Restart Claude Code to pick up the new build." -ForegroundColor White
 Write-Host ""
