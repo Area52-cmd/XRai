@@ -291,9 +291,13 @@ function setAttachStatus(state, s = null) {
   switch (state) {
     case "attached":
       dot.classList.add("ok");
-      txt.textContent = s?.excel?.workbook
-        ? `attached · ${s.excel.workbook}`
-        : "attached";
+      // Show whichever identifier the daemon provides — document name,
+      // project name, or just "attached". No host-specific vocabulary.
+      const label = s?.target?.document
+                 || s?.target?.name
+                 || s?.excel?.workbook     // back-compat for current daemon shape
+                 || "attached";
+      txt.textContent = `attached · ${label}`;
       break;
     case "not-attached":
       dot.classList.add("warn");

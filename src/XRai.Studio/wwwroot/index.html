@@ -29,12 +29,12 @@
 
   <main id="grid">
     <section id="panel-screenshot" class="panel">
-      <div class="panel-header">Live Excel</div>
+      <div class="panel-header">Live target</div>
       <div class="panel-body">
         <div id="screenshot-stage">
           <img id="screenshot-img" alt="Waiting for frames…">
           <div id="screenshot-empty" class="empty-hint">
-            No frames yet. Ensure Excel is open and attached via <code>{"cmd":"connect"}</code>.
+            No frames yet. Attach to a target application — any Windows app with a window handle.
           </div>
         </div>
       </div>
@@ -70,7 +70,7 @@
       <div class="panel-header">Build console</div>
       <div class="panel-body">
         <ul id="build-list" class="scroll-list"></ul>
-        <div id="build-empty" class="empty-hint">No rebuild in flight. Run <code>{"cmd":"rebuild"}</code>.</div>
+        <div id="build-empty" class="empty-hint">No build in flight yet.</div>
       </div>
     </section>
   </main>

@@ -404,6 +404,10 @@ public class DaemonServer
     /// <summary>
     /// Build the JSON object returned by GET /state. Called synchronously
     /// from the web request thread — must not block on long operations.
+    /// Generic shape: the dashboard treats "target" as the currently-attached
+    /// application. Today's target is Excel (the first adapter shipped); the
+    /// structure allows future targets (Word, SAP, AutoCAD, any Windows app)
+    /// to populate the same fields without schema changes.
     /// </summary>
     private System.Text.Json.Nodes.JsonObject BuildStudioState()
     {
@@ -420,11 +424,13 @@ public class DaemonServer
             try
             {
                 var wbState = _session.ProbeWorkbookState();
-                obj["excel"] = new System.Text.Json.Nodes.JsonObject
+                obj["target"] = new System.Text.Json.Nodes.JsonObject
                 {
-                    ["workbook"] = wbState.Name,
-                    ["hasWorkbook"] = wbState.HasWorkbook,
-                    ["workbookCount"] = wbState.Count,
+                    ["kind"] = "excel",           // future: "word", "sap", "autocad", etc.
+                    ["name"] = "Microsoft Excel",
+                    ["document"] = wbState.Name,  // generic document / project / workbook name
+                    ["hasDocument"] = wbState.HasWorkbook,
+                    ["documentCount"] = wbState.Count,
                 };
             }
             catch { }
