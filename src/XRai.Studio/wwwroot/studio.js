@@ -35,11 +35,224 @@ const state = {
 async function boot() {
   wireControls();
   wireOverlay();
+  wireResizers();
+  wireFollowTail();
+  restoreLayout();
   await fetchInitialState();
   await loadPreferences();
   await loadIdes();
   maybeShowStartupOverlay();
   openSocket();
+}
+
+// ── Resizable panels ───────────────────────────────────────────
+// Drag handles between the three columns and between the three
+// right-stack rows let the user customize the layout. Sizes are
+// persisted to localStorage so they survive reload.
+
+const LAYOUT_STORAGE_KEY = "xrai-studio-layout-v1";
+
+function restoreLayout() {
+  try {
+    const saved = localStorage.getItem(LAYOUT_STORAGE_KEY);
+    if (!saved) return;
+    const layout = JSON.parse(saved);
+    const grid = document.getElementById("grid");
+    if (!grid) return;
+    if (layout.colScreenshot) grid.style.setProperty("--col-screenshot", layout.colScreenshot);
+    if (layout.colAgent)      grid.style.setProperty("--col-agent",      layout.colAgent);
+    if (layout.colRight)      grid.style.setProperty("--col-right",      layout.colRight);
+    if (layout.rowFiles)      grid.style.setProperty("--row-files",      layout.rowFiles);
+    if (layout.rowModel)      grid.style.setProperty("--row-model",      layout.rowModel);
+    if (layout.rowBuild)      grid.style.setProperty("--row-build",      layout.rowBuild);
+  } catch (err) {
+    console.warn("[studio] restoreLayout failed", err);
+  }
+}
+
+function saveLayout() {
+  try {
+    const grid = document.getElementById("grid");
+    if (!grid) return;
+    const style = grid.style;
+    const layout = {
+      colScreenshot: style.getPropertyValue("--col-screenshot"),
+      colAgent:      style.getPropertyValue("--col-agent"),
+      colRight:      style.getPropertyValue("--col-right"),
+      rowFiles:      style.getPropertyValue("--row-files"),
+      rowModel:      style.getPropertyValue("--row-model"),
+      rowBuild:      style.getPropertyValue("--row-build"),
+    };
+    localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layout));
+  } catch (err) {
+    console.warn("[studio] saveLayout failed", err);
+  }
+}
+
+function wireResizers() {
+  const colResizers = document.querySelectorAll(".resizer-col");
+  colResizers.forEach((handle) => {
+    handle.addEventListener("mousedown", (e) => startColResize(e, handle));
+  });
+
+  const rowResizers = document.querySelectorAll(".resizer-row");
+  rowResizers.forEach((handle) => {
+    handle.addEventListener("mousedown", (e) => startRowResize(e, handle));
+  });
+}
+
+// Convert the grid's current column track sizes to pixel values so
+// we can manipulate them precisely during drag, then re-express as
+// fractional units on release so the layout stays responsive to
+// window resizes.
+function startColResize(e, handle) {
+  e.preventDefault();
+  const grid = document.getElementById("grid");
+  if (!grid) return;
+
+  handle.classList.add("dragging");
+  document.body.classList.add("resizing-col");
+
+  // Read the current computed widths of all 5 grid columns
+  // [screenshot, resizer1, agent, resizer2, right]
+  const computed = getComputedStyle(grid).gridTemplateColumns.split(" ").map(parseFloat);
+  const [wScreenshot, wR1, wAgent, wR2, wRight] = computed;
+
+  // Pin everything to px for the duration of the drag so our math
+  // is stable. We'll re-express as fr on release.
+  grid.style.setProperty("--col-screenshot", `${wScreenshot}px`);
+  grid.style.setProperty("--col-agent",      `${wAgent}px`);
+  grid.style.setProperty("--col-right",      `${wRight}px`);
+
+  const which = handle.dataset.which; // "col-1" (between screenshot/agent) or "col-2" (between agent/right)
+  const startX = e.clientX;
+  const startScreenshot = wScreenshot;
+  const startAgent = wAgent;
+  const startRight = wRight;
+
+  const MIN = 160; // px — prevent panels from collapsing to nothing
+
+  function onMove(ev) {
+    const dx = ev.clientX - startX;
+    if (which === "col-1") {
+      // Move the boundary between screenshot and agent
+      const newScreenshot = Math.max(MIN, startScreenshot + dx);
+      const newAgent = Math.max(MIN, startAgent - dx);
+      // Only apply if neither hit the floor
+      if (newScreenshot > MIN && newAgent > MIN) {
+        grid.style.setProperty("--col-screenshot", `${newScreenshot}px`);
+        grid.style.setProperty("--col-agent",      `${newAgent}px`);
+      }
+    } else if (which === "col-2") {
+      // Move the boundary between agent and right stack
+      const newAgent = Math.max(MIN, startAgent + dx);
+      const newRight = Math.max(MIN, startRight - dx);
+      if (newAgent > MIN && newRight > MIN) {
+        grid.style.setProperty("--col-agent", `${newAgent}px`);
+        grid.style.setProperty("--col-right", `${newRight}px`);
+      }
+    }
+  }
+
+  function onUp() {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    handle.classList.remove("dragging");
+    document.body.classList.remove("resizing-col");
+
+    // Convert px back to fr so the layout is responsive to window
+    // resizes. Total fr budget = 4 (matches default 1.2+1.8+1.0).
+    const finalS = parseFloat(grid.style.getPropertyValue("--col-screenshot")) || 0;
+    const finalA = parseFloat(grid.style.getPropertyValue("--col-agent")) || 0;
+    const finalR = parseFloat(grid.style.getPropertyValue("--col-right")) || 0;
+    const total = finalS + finalA + finalR;
+    if (total > 0) {
+      const s = ((finalS / total) * 4).toFixed(3);
+      const a = ((finalA / total) * 4).toFixed(3);
+      const r = ((finalR / total) * 4).toFixed(3);
+      grid.style.setProperty("--col-screenshot", `${s}fr`);
+      grid.style.setProperty("--col-agent",      `${a}fr`);
+      grid.style.setProperty("--col-right",      `${r}fr`);
+    }
+    saveLayout();
+  }
+
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+
+function startRowResize(e, handle) {
+  e.preventDefault();
+  const grid = document.getElementById("grid");
+  const stack = document.getElementById("right-stack");
+  if (!grid || !stack) return;
+
+  handle.classList.add("dragging");
+  document.body.classList.add("resizing-row");
+
+  // Read current pixel heights of the three stack panels
+  const files = document.querySelector("#right-stack .panel-files");
+  const model = document.querySelector("#right-stack .panel-model");
+  const build = document.querySelector("#right-stack .panel-build");
+  if (!files || !model || !build) return;
+
+  const hFiles = files.getBoundingClientRect().height;
+  const hModel = model.getBoundingClientRect().height;
+  const hBuild = build.getBoundingClientRect().height;
+
+  // Pin to px for stable math during drag
+  grid.style.setProperty("--row-files", `${hFiles}px`);
+  grid.style.setProperty("--row-model", `${hModel}px`);
+  grid.style.setProperty("--row-build", `${hBuild}px`);
+
+  const which = handle.dataset.which; // "row-1" (files/model) or "row-2" (model/build)
+  const startY = e.clientY;
+  const startFiles = hFiles;
+  const startModel = hModel;
+  const startBuild = hBuild;
+
+  const MIN = 60;
+
+  function onMove(ev) {
+    const dy = ev.clientY - startY;
+    if (which === "row-1") {
+      const newFiles = Math.max(MIN, startFiles + dy);
+      const newModel = Math.max(MIN, startModel - dy);
+      if (newFiles > MIN && newModel > MIN) {
+        grid.style.setProperty("--row-files", `${newFiles}px`);
+        grid.style.setProperty("--row-model", `${newModel}px`);
+      }
+    } else if (which === "row-2") {
+      const newModel = Math.max(MIN, startModel + dy);
+      const newBuild = Math.max(MIN, startBuild - dy);
+      if (newModel > MIN && newBuild > MIN) {
+        grid.style.setProperty("--row-model", `${newModel}px`);
+        grid.style.setProperty("--row-build", `${newBuild}px`);
+      }
+    }
+  }
+
+  function onUp() {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    handle.classList.remove("dragging");
+    document.body.classList.remove("resizing-row");
+
+    // Convert back to % so the stack stays responsive to column resize
+    const finalF = parseFloat(grid.style.getPropertyValue("--row-files")) || 0;
+    const finalM = parseFloat(grid.style.getPropertyValue("--row-model")) || 0;
+    const finalB = parseFloat(grid.style.getPropertyValue("--row-build")) || 0;
+    const total = finalF + finalM + finalB;
+    if (total > 0) {
+      grid.style.setProperty("--row-files", `${((finalF / total) * 100).toFixed(2)}%`);
+      grid.style.setProperty("--row-model", `${((finalM / total) * 100).toFixed(2)}%`);
+      grid.style.setProperty("--row-build", `${((finalB / total) * 100).toFixed(2)}%`);
+    }
+    saveLayout();
+  }
+
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
 }
 
 // ── WebSocket ────────────────────────────────────────────────────
@@ -788,13 +1001,44 @@ function appendAgentItem(item) {
   scrollFeedToBottom();
 }
 
+// Always scroll the agent feed to the latest entry when a new item lands,
+// UNLESS the user has manually scrolled up to read history (the "follow
+// tail" flag tracks this). A "↓ latest" button re-engages follow-tail when
+// they're done reading.
 function scrollFeedToBottom() {
   const feed = $("#agent-feed");
-  const threshold = 120;
-  const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < threshold;
-  if (nearBottom) {
-    requestAnimationFrame(() => { feed.scrollTop = feed.scrollHeight; });
-  }
+  if (!feed) return;
+  if (!state.followTail) return;
+  requestAnimationFrame(() => { feed.scrollTop = feed.scrollHeight; });
+}
+
+// Wire manual scrolling: if the user scrolls up more than a small
+// threshold from the bottom, disengage follow-tail. If they scroll
+// back to the bottom, re-engage.
+function wireFollowTail() {
+  const feed = $("#agent-feed");
+  const btn = $("#btn-follow-tail");
+  if (!feed || !btn) return;
+  state.followTail = true;
+  btn.classList.add("hidden");
+
+  feed.addEventListener("scroll", () => {
+    const distanceFromBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight;
+    const atBottom = distanceFromBottom < 40;
+    if (atBottom && !state.followTail) {
+      state.followTail = true;
+      btn.classList.add("hidden");
+    } else if (!atBottom && state.followTail) {
+      state.followTail = false;
+      btn.classList.remove("hidden");
+    }
+  });
+
+  btn.addEventListener("click", () => {
+    state.followTail = true;
+    btn.classList.add("hidden");
+    feed.scrollTop = feed.scrollHeight;
+  });
 }
 
 // ── Files / Model / Build / Commands ───────────────────────────

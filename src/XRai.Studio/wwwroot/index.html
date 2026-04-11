@@ -148,7 +148,7 @@
   </aside>
 
   <main id="grid">
-    <!-- LEFT: live target screenshot — the biggest panel -->
+    <!-- LEFT: live target screenshot -->
     <section id="panel-screenshot" class="panel panel-screenshot">
       <div class="panel-header" title="Live screenshot of the running app you're building, refreshed several times a second.">
         <span class="header-dot live-dot"></span>
@@ -166,12 +166,16 @@
       </div>
     </section>
 
-    <!-- CENTER: live agent feed — the activity narration -->
+    <!-- Column resizer between screenshot and agent -->
+    <div class="resizer resizer-col" data-which="col-1" title="Drag to resize"></div>
+
+    <!-- CENTER: live agent feed -->
     <section id="panel-agent" class="panel panel-agent">
       <div class="panel-header" title="A live narration of what the AI is thinking and doing — every message, every file edit, every command.">
         <span class="header-dot agent-dot"></span>
         Agent activity
         <span class="panel-meta" id="agent-meta"></span>
+        <button id="btn-follow-tail" class="follow-tail-btn" title="Jump to the latest activity">↓ latest</button>
       </div>
       <div class="panel-body">
         <div id="agent-feed" class="agent-feed"></div>
@@ -182,47 +186,58 @@
       </div>
     </section>
 
-    <!-- RIGHT: stacked utility panels -->
-    <section id="panel-files" class="panel panel-files">
-      <div class="panel-header" title="Files the agent has just edited or created. Click any file to open it in your IDE.">
-        <span class="header-dot files-dot"></span>
-        Files touched
-      </div>
-      <div class="panel-body">
-        <ul id="files-list" class="scroll-list files-list"></ul>
-        <div id="files-empty" class="empty-hint">
-          <div class="empty-sub">Files the AI edits will appear here. Click any file to jump to it in your IDE.</div>
-        </div>
-      </div>
-    </section>
+    <!-- Column resizer between agent and right stack -->
+    <div class="resizer resizer-col" data-which="col-2" title="Drag to resize"></div>
 
-    <section id="panel-model" class="panel panel-model">
-      <div class="panel-header" title="Live state of the running app — values, properties, and inputs that change while you build.">
-        <span class="header-dot model-dot"></span>
-        App state
-      </div>
-      <div class="panel-body">
-        <table id="model-table" class="kv-table">
-          <tbody></tbody>
-        </table>
-        <div id="model-empty" class="empty-hint">
-          <div class="empty-sub">Live values from the running app will appear here.</div>
+    <!-- RIGHT: stacked utility panels (nested flex column, internally resizable) -->
+    <aside id="right-stack">
+      <section id="panel-files" class="panel panel-files">
+        <div class="panel-header" title="Files the agent has just edited or created. Click any file to open it in your IDE.">
+          <span class="header-dot files-dot"></span>
+          Files touched
         </div>
-      </div>
-    </section>
+        <div class="panel-body">
+          <ul id="files-list" class="scroll-list files-list"></ul>
+          <div id="files-empty" class="empty-hint">
+            <div class="empty-sub">Files the AI edits will appear here. Click any file to jump to it in your IDE.</div>
+          </div>
+        </div>
+      </section>
 
-    <section id="panel-build" class="panel panel-build">
-      <div class="panel-header" title="Step-by-step progress when the AI rebuilds the running app.">
-        <span class="header-dot build-dot"></span>
-        Build progress
-      </div>
-      <div class="panel-body">
-        <ul id="build-list" class="scroll-list build-list"></ul>
-        <div id="build-empty" class="empty-hint">
-          <div class="empty-sub">Build progress will appear here when the AI rebuilds the app.</div>
+      <!-- Row resizer between files and model -->
+      <div class="resizer resizer-row" data-which="row-1" title="Drag to resize"></div>
+
+      <section id="panel-model" class="panel panel-model">
+        <div class="panel-header" title="Live state of the running app — values, properties, and inputs that change while you build.">
+          <span class="header-dot model-dot"></span>
+          App state
         </div>
-      </div>
-    </section>
+        <div class="panel-body">
+          <table id="model-table" class="kv-table">
+            <tbody></tbody>
+          </table>
+          <div id="model-empty" class="empty-hint">
+            <div class="empty-sub">Live values from the running app will appear here.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Row resizer between model and build -->
+      <div class="resizer resizer-row" data-which="row-2" title="Drag to resize"></div>
+
+      <section id="panel-build" class="panel panel-build">
+        <div class="panel-header" title="Step-by-step progress when the AI rebuilds the running app.">
+          <span class="header-dot build-dot"></span>
+          Build progress
+        </div>
+        <div class="panel-body">
+          <ul id="build-list" class="scroll-list build-list"></ul>
+          <div id="build-empty" class="empty-hint">
+            <div class="empty-sub">Build progress will appear here when the AI rebuilds the app.</div>
+          </div>
+        </div>
+      </section>
+    </aside>
   </main>
 
   <footer id="timeline">

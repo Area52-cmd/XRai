@@ -220,26 +220,90 @@ code {
 .btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .btn-icon { font-size: 10px; opacity: 0.8; }
 
-/* ── Main grid ───────────────────────────────────────────── */
+/* ── Main grid (resizable via drag handles) ──────────────── */
 
 #grid {
+  /* Three columns separated by 5 px drag handles. The column widths
+     use CSS variables so JS can update them on drag without touching
+     the DOM. Default 1.2 / 1.8 / 1.0 fractional units. */
   display: grid;
-  grid-template-columns: minmax(380px, 1.2fr) minmax(420px, 1.8fr) minmax(280px, 1fr);
-  grid-template-rows: 1fr 1fr 1fr;
-  grid-template-areas:
-    "screenshot agent files"
-    "screenshot agent model"
-    "screenshot agent build";
-  gap: 1px;
-  background: var(--border);
+  grid-template-columns:
+    var(--col-screenshot, 1.2fr)
+    5px
+    var(--col-agent, 1.8fr)
+    5px
+    var(--col-right, 1fr);
+  grid-template-rows: 1fr;
+  background: var(--bg-0);
   overflow: hidden;
+  min-height: 0;
 }
 
-.panel-screenshot { grid-area: screenshot; }
-.panel-agent { grid-area: agent; }
-.panel-files { grid-area: files; }
-.panel-model { grid-area: model; }
-.panel-build { grid-area: build; }
+.panel-screenshot { grid-column: 1; }
+.panel-agent { grid-column: 3; }
+#right-stack {
+  grid-column: 5;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--bg-0);
+}
+
+/* Nested flex-column: files / model / build with row resizers between. */
+#right-stack .panel {
+  flex: 1 1 0;
+  min-height: 60px;
+}
+#right-stack .panel-files { flex-basis: var(--row-files, 33.33%); }
+#right-stack .panel-model { flex-basis: var(--row-model, 33.33%); }
+#right-stack .panel-build { flex-basis: var(--row-build, 33.33%); }
+
+/* ── Resizer handles ─────────────────────────────────────── */
+
+.resizer {
+  background: var(--border);
+  transition: background 120ms;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 5;
+  user-select: none;
+}
+
+.resizer-col {
+  grid-row: 1;
+  cursor: col-resize;
+  width: 5px;
+}
+.resizer-col:nth-of-type(1) { grid-column: 2; }
+.resizer-col:nth-of-type(2) { grid-column: 4; }
+
+.resizer-row {
+  height: 5px;
+  cursor: row-resize;
+  width: 100%;
+}
+
+.resizer:hover,
+.resizer.dragging {
+  background: var(--accent);
+}
+
+/* Widen the clickable hit area without visually thickening the line.
+   A 9-px transparent pseudo-element absorbs clicks slightly outside
+   the 5-px visible strip so users don't need pixel-perfect aim. */
+.resizer::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+}
+
+/* Global cursor + cancel pointer events on iframes during drag so
+   the handle stays grabbed even when the mouse flies over a <img>
+   or an embedded area. */
+body.resizing-col * { cursor: col-resize !important; user-select: none; }
+body.resizing-row * { cursor: row-resize !important; user-select: none; }
 
 .panel {
   display: flex;
@@ -287,6 +351,34 @@ code {
   letter-spacing: 0;
   font-family: var(--font-mono);
   font-size: 10.5px;
+}
+
+/* ── "↓ latest" jump button in the Agent activity header ─ */
+
+.follow-tail-btn {
+  margin-left: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  transition: background 120ms, color 120ms;
+  animation: follow-pulse 1.8s ease-in-out infinite;
+}
+.follow-tail-btn:hover {
+  background: var(--accent);
+  color: var(--bg-0);
+}
+.follow-tail-btn.hidden { display: none; }
+
+@keyframes follow-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent-glow); }
+  50% { box-shadow: 0 0 0 4px rgba(106, 167, 255, 0.15); }
 }
 
 .panel-body {
