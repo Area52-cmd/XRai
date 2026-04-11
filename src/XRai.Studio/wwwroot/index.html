@@ -79,7 +79,73 @@
     <button id="btn-clear" class="btn" title="Clear all panels">
       <span class="btn-icon">✕</span> Clear
     </button>
+    <button id="btn-settings" class="btn" title="Studio settings and diagnostics">
+      <span class="btn-icon">⚙</span>
+    </button>
   </header>
+
+  <!-- Settings drawer — slides in from the right when the gear icon is clicked -->
+  <aside id="settings-drawer" class="drawer hidden">
+    <div class="drawer-header">
+      <div class="drawer-title">Studio settings</div>
+      <button id="settings-close" class="modal-close">✕</button>
+    </div>
+    <div class="drawer-body">
+      <section class="settings-section">
+        <h3 class="settings-section-title">Editor</h3>
+        <p class="settings-help">Which IDE Studio uses to display live file edits.</p>
+        <div id="settings-ide-info" class="settings-value"></div>
+        <button id="settings-change-ide" class="btn btn-ghost">Change editor</button>
+      </section>
+
+      <section class="settings-section">
+        <h3 class="settings-section-title">Follow mode</h3>
+        <p class="settings-help">Automatically open edited files in your editor as the agent edits them.</p>
+        <label class="settings-toggle">
+          <input type="checkbox" id="settings-follow">
+          <span>Enable follow mode</span>
+        </label>
+      </section>
+
+      <section class="settings-section">
+        <h3 class="settings-section-title">Capture</h3>
+        <p class="settings-help">Live screenshot stream from the target app.</p>
+        <label class="settings-toggle">
+          <input type="checkbox" id="settings-pause">
+          <span>Pause frame stream</span>
+        </label>
+      </section>
+
+      <section class="settings-section">
+        <h3 class="settings-section-title">Diagnostics</h3>
+        <p class="settings-help">Daemon logs and raw state — useful when Studio misbehaves.</p>
+        <div class="settings-kv">
+          <div class="kv-row"><span class="kv-k">Daemon pipe</span><span class="kv-v" id="diag-pipe">—</span></div>
+          <div class="kv-row"><span class="kv-k">Studio URL</span><span class="kv-v" id="diag-url">—</span></div>
+          <div class="kv-row"><span class="kv-k">Attached</span><span class="kv-v" id="diag-attached">—</span></div>
+          <div class="kv-row"><span class="kv-k">Hooks connected</span><span class="kv-v" id="diag-hooks">—</span></div>
+          <div class="kv-row"><span class="kv-k">Events received</span><span class="kv-v" id="diag-events">0</span></div>
+          <div class="kv-row"><span class="kv-k">Frames received</span><span class="kv-v" id="diag-frames">0</span></div>
+          <div class="kv-row"><span class="kv-k">STA stuck</span><span class="kv-v" id="diag-sta">no</span></div>
+        </div>
+        <div class="settings-buttons">
+          <button id="settings-refresh" class="btn btn-ghost">Refresh state</button>
+          <button id="settings-sta-reset" class="btn btn-ghost">sta.reset</button>
+          <button id="settings-open-logs" class="btn btn-ghost">Open log folder</button>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h3 class="settings-section-title">About</h3>
+        <div class="settings-kv">
+          <div class="kv-row"><span class="kv-k">XRai Studio</span><span class="kv-v">v1 phase 4</span></div>
+          <div class="kv-row"><span class="kv-k">Runs at</span><span class="kv-v">localhost only</span></div>
+          <div class="kv-row"><span class="kv-k">Tokens used</span><span class="kv-v">0 (passive observer)</span></div>
+          <div class="kv-row"><span class="kv-k">Off-by-default</span><span class="kv-v">yes — opt in via <code>xrai --studio</code></span></div>
+        </div>
+      </section>
+    </div>
+  </aside>
 
   <main id="grid">
     <!-- LEFT: live target screenshot — the biggest panel -->

@@ -162,10 +162,17 @@ function maybeShowStartupOverlay() {
   showStartupOverlay();
 }
 
-function showStartupOverlay() {
+async function showStartupOverlay() {
+  // Refresh the IDE list every time the overlay opens so "running"
+  // is current (the user may have launched/closed an IDE since boot).
+  await loadIdes();
+
   const overlay = $("#startup-overlay");
   const choices = $("#ide-choices");
   choices.innerHTML = "";
+
+  const installedIdes = state.ides.filter(i => i.installed);
+  const hasMultipleInstalled = installedIdes.length > 1;
 
   for (const ide of state.ides) {
     const row = document.createElement("div");
@@ -194,7 +201,7 @@ function showStartupOverlay() {
 
     if (ide.installed) {
       row.addEventListener("click", (e) => {
-        if (e.target.closest(".ide-action-install")) return; // let install link pass through
+        if (e.target.closest(".ide-action-install")) return;
         selectIde(ide.kind);
       });
     }
@@ -202,11 +209,41 @@ function showStartupOverlay() {
     choices.appendChild(row);
   }
 
-  // Pre-select: running IDE first, then installed
-  const pre = state.ides.find(i => i.running) || state.ides.find(i => i.installed);
-  if (pre) selectIde(pre.kind);
+  // Pre-selection rules (in order):
+  //   1. Previously-saved preference (if still installed) — respects user's
+  //      explicit choice across sessions.
+  //   2. Only one installed IDE — no ambiguity, safe to pre-select.
+  //   3. Multiple installed — DO NOT pre-select automatically. Force the
+  //      user to click. This avoids the "I have VS Code and VS 2026 and
+  //      Studio keeps picking VS Code on me" complaint.
+  let preKind = null;
+  const prevKind = state.preferences?.preferredIde;
+  if (prevKind) {
+    const prevStillInstalled = state.ides.find(i => i.kind === prevKind && i.installed);
+    if (prevStillInstalled) preKind = prevKind;
+  }
+  if (!preKind && installedIdes.length === 1) {
+    preKind = installedIdes[0].kind;
+  }
+  // Note: if multiple installed and no prior preference, nothing is selected.
+  // The Continue button stays disabled until the user clicks one.
+
+  if (preKind) {
+    selectIde(preKind);
+  } else {
+    state.pendingIdeSelection = null;
+  }
+  updateContinueButton();
 
   overlay.classList.remove("hidden");
+}
+
+function updateContinueButton() {
+  const btn = $("#overlay-continue");
+  if (!btn) return;
+  const hasSelection = !!state.pendingIdeSelection;
+  btn.disabled = !hasSelection;
+  btn.textContent = hasSelection ? "Continue" : "Pick an editor to continue";
 }
 
 function selectIde(kind) {
@@ -214,6 +251,7 @@ function selectIde(kind) {
     el.classList.toggle("selected", el.dataset.kind === kind);
   }
   state.pendingIdeSelection = kind;
+  updateContinueButton();
 }
 
 function hideStartupOverlay() {
@@ -322,8 +360,48 @@ function handleEvent(evt) {
     case "rebuild.step":          return onRebuildStep(evt.data);
     case "command.start":
     case "command.end":           return onCommand(evt);
+    case "target.attached":       return onTargetAttached(evt.data);
+    case "target.detached":       return onTargetDetached(evt.data);
+    case "target.sta_stuck":      return onStaStuck(evt.data);
+    case "target.sta_recovered":  return onStaRecovered(evt.data);
+    case "agent.adapter.error":   return onAgentAdapterError(evt.data);
     default: break;
   }
+}
+
+function onTargetAttached(data) {
+  const name = data?.name || "Target app";
+  toast(`Attached to ${name} (pid ${data?.pid || "?"})`, "ok");
+  // Force a state refresh so the top bar updates
+  fetchInitialState();
+}
+
+function onTargetDetached(data) {
+  const reason = data?.reason || "unknown";
+  toast(`Target detached: ${reason}`, "warn", 4000);
+  setStatus("not-attached");
+}
+
+function onStaStuck(data) {
+  state.staStuck = true;
+  const hint = data?.hint || "STA worker wedged";
+  toast(`⚠ ${hint}`, "err", 8000);
+  // Reflect in the chip
+  const attachDot = $("#attach-dot");
+  if (attachDot) attachDot.className = "dot err";
+  const attachText = $("#attach-text");
+  if (attachText) attachText.textContent = "STA stuck";
+}
+
+function onStaRecovered() {
+  state.staStuck = false;
+  toast("STA recovered — resuming normal polling", "ok");
+}
+
+function onAgentAdapterError(data) {
+  const phase = data?.phase || "?";
+  const msg = data?.message || "unknown";
+  toast(`Agent adapter error (${phase}): ${msg}`, "err", 6000);
 }
 
 // ── Screenshot stream ───────────────────────────────────────────
@@ -865,6 +943,58 @@ function wireControls() {
       : '<span class="btn-icon">⏸</span> Pause';
   });
 
+  // Click the IDE chip to re-open the picker overlay and change editor
+  // mid-session. Essential for users who opened Studio while VS Code was
+  // running, then later want to switch to VS 2026.
+  $("#chip-ide")?.addEventListener("click", () => {
+    showStartupOverlay();
+  });
+  const chipIde = $("#chip-ide");
+  if (chipIde) chipIde.style.cursor = "pointer";
+
+  // Settings drawer — gear icon in top bar
+  $("#btn-settings")?.addEventListener("click", openSettingsDrawer);
+  $("#settings-close")?.addEventListener("click", closeSettingsDrawer);
+  $("#settings-change-ide")?.addEventListener("click", () => {
+    closeSettingsDrawer();
+    showStartupOverlay();
+  });
+  $("#settings-follow")?.addEventListener("change", async (e) => {
+    if (!state.preferences) state.preferences = {};
+    state.preferences.followMode = e.target.checked;
+    await savePreferences();
+    renderFollowChip();
+  });
+  $("#settings-pause")?.addEventListener("change", (e) => {
+    state.paused = e.target.checked;
+    $("#btn-pause").classList.toggle("active", state.paused);
+    $("#btn-pause").innerHTML = state.paused
+      ? '<span class="btn-icon">▶</span> Resume'
+      : '<span class="btn-icon">⏸</span> Pause';
+  });
+  $("#settings-refresh")?.addEventListener("click", refreshDiagnostics);
+  $("#settings-sta-reset")?.addEventListener("click", async () => {
+    toast("Sending sta.reset…", "info");
+    try {
+      const res = await fetch("/command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cmd: "sta.reset" }),
+      });
+      const result = await res.json();
+      if (result.ok) {
+        toast("STA reset — run connect to reattach", "ok");
+      } else {
+        toast(`sta.reset failed: ${result.error || "unknown"}`, "err");
+      }
+    } catch (err) {
+      toast(`sta.reset error: ${err}`, "err");
+    }
+  });
+  $("#settings-open-logs")?.addEventListener("click", () => {
+    toast("Log folder: %LOCALAPPDATA%\\XRai\\logs\\", "info", 4000);
+  });
+
   $("#btn-clear").addEventListener("click", () => {
     $("#agent-feed").innerHTML = "";
     $("#agent-empty").classList.remove("hidden");
@@ -893,6 +1023,52 @@ function wireControls() {
       $("#btn-pause").click();
     }
   });
+}
+
+// ── Settings drawer ─────────────────────────────────────────────
+
+async function openSettingsDrawer() {
+  $("#settings-drawer").classList.remove("hidden");
+  await refreshDiagnostics();
+
+  // Sync toggle states from current state
+  const followEl = $("#settings-follow");
+  if (followEl) followEl.checked = state.preferences?.followMode === true;
+  const pauseEl = $("#settings-pause");
+  if (pauseEl) pauseEl.checked = state.paused;
+
+  // Show the currently selected IDE
+  const info = $("#settings-ide-info");
+  if (info) {
+    const chosenKind = state.preferences?.preferredIde;
+    const chosen = state.ides.find(i => i.kind === chosenKind);
+    if (chosen) {
+      info.textContent = `${chosen.name}${chosen.running ? " (running)" : chosen.installed ? " (installed)" : " (not installed)"}`;
+    } else {
+      info.textContent = "No editor selected. Click below to pick one.";
+    }
+  }
+}
+
+function closeSettingsDrawer() {
+  $("#settings-drawer").classList.add("hidden");
+}
+
+async function refreshDiagnostics() {
+  try {
+    const s = await fetchJson("/state");
+    $("#diag-pipe").textContent = s?.daemonPipe || "—";
+    $("#diag-url").textContent = s?.studioUrl ? s.studioUrl.replace(/\?t=.*/, "?t=…") : "—";
+    $("#diag-attached").textContent = s?.attached ? `yes (${s?.target?.document || "no document"})` : "no";
+    $("#diag-hooks").textContent = s?.hooks ? "yes" : "no";
+  } catch {
+    $("#diag-pipe").textContent = "error";
+    $("#diag-attached").textContent = "error";
+    $("#diag-hooks").textContent = "error";
+  }
+  $("#diag-events").textContent = state.eventCount.toLocaleString();
+  $("#diag-frames").textContent = state.frameCount.toLocaleString();
+  $("#diag-sta").textContent = state.staStuck ? "YES — run sta.reset" : "no";
 }
 
 // ── Toasts ──────────────────────────────────────────────────────

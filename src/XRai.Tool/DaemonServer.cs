@@ -481,42 +481,103 @@ public class DaemonServer
         _autoAttachCts = new CancellationTokenSource();
         var cts = _autoAttachCts;
         int consecutiveFailures = 0;
+        bool staStuckNotified = false;
+
+        // Exponential backoff when the STA is wedged. Normal tick = 2s.
+        // When the STA is stuck (modal dialog, COM deadlock, etc.) we back
+        // off to 30s — hammering a stuck STA every 2s doesn't heal it and
+        // just floods the log with identical "Already attached" errors.
+        const int NormalIntervalMs = 2000;
+        const int StuckIntervalMs = 30_000;
 
         var thread = new Thread(() =>
         {
             DaemonLog("Auto-attach watchdog started");
             while (!cts.IsCancellationRequested && _running)
             {
+                int sleepMs = NormalIntervalMs;
+
                 try
                 {
-                    // Quick non-COM check first to avoid queueing STA work every tick
+                    // Fast-path: if the STA worker is reporting itself stuck
+                    // (from its own watchdog, not ours), DO NOT dispatch any
+                    // more work to it. Queueing Detach/Attach onto a stuck
+                    // queue just piles up abandoned work items and times out
+                    // in order. Instead back off and let the user call
+                    // {"cmd":"sta.reset"} to recover.
+                    if (_staWorker.IsStuck)
+                    {
+                        if (!staStuckNotified)
+                        {
+                            staStuckNotified = true;
+                            DaemonLog("Auto-attach: STA worker is stuck, backing off until sta.reset");
+                            try
+                            {
+                                _studioHost?.Bus.Publish(XRai.Studio.StudioEvent.Now(
+                                    "target.sta_stuck", "daemon", new System.Text.Json.Nodes.JsonObject
+                                    {
+                                        ["consecutiveTimeouts"] = _staWorker.ConsecutiveTimeouts,
+                                        ["hint"] = "STA worker is wedged — likely a modal dialog. Auto-attach is paused. Run sta.reset to recover.",
+                                    }));
+                            }
+                            catch { }
+                        }
+                        sleepMs = StuckIntervalMs;
+                        continue; // skip to sleep/continue
+                    }
+
+                    // STA is healthy again after a stuck spell — clear the flag
+                    // so the next stuck episode logs once again.
+                    if (staStuckNotified)
+                    {
+                        staStuckNotified = false;
+                        DaemonLog("Auto-attach: STA worker recovered, resuming normal polling");
+                        try
+                        {
+                            _studioHost?.Bus.Publish(XRai.Studio.StudioEvent.Now(
+                                "target.sta_recovered", "daemon", null));
+                        }
+                        catch { }
+                    }
+
                     bool isAttached = _session.IsAttached;
 
                     if (isAttached)
                     {
-                        // Health probe and Detach BOTH go through the STA worker.
-                        // _session.App is a COM RCW that was activated on the
-                        // STA thread; releasing it from a background thread
-                        // can throw RPC_E_WRONG_THREAD or leak the RCW.
-                        bool dead = false;
+                        // Health probe — short timeout to fail fast if the STA
+                        // starts wedging. We do NOT try to detach here on
+                        // probe failure because a probe timeout probably means
+                        // the STA is about to be marked stuck, and dispatching
+                        // more work would just queue behind the stuck op.
+                        bool probeOk = false;
                         try
                         {
                             _staWorker.Invoke(() =>
                             {
-                                var _h = _session.App.Hwnd; // throws if RCW dead
+                                var _h = _session.App.Hwnd;
                                 return "ok";
-                            }, 1500);
+                            }, 800);
+                            probeOk = true;
+                        }
+                        catch (TimeoutException)
+                        {
+                            // STA just got wedged. The next iteration will
+                            // see IsStuck=true and enter the backoff path.
+                            DaemonLog("Auto-attach: health probe timed out, deferring to stuck-STA backoff");
                         }
                         catch
                         {
-                            dead = true;
+                            // Real COM exception — Excel process is gone.
+                            probeOk = false;
                         }
 
-                        if (dead)
+                        if (!probeOk && !_staWorker.IsStuck)
                         {
+                            // Safe to detach: the failure was a COM exception
+                            // (process gone), not an STA wedge.
                             DaemonLog("Auto-attach: existing session is dead, detaching");
-                            try { _staWorker.Invoke(() => { _session.Detach(); return "ok"; }, 2000); }
-                            catch (Exception ex) { DaemonLog($"Auto-attach detach failed: {ex.Message}"); }
+                            try { _staWorker.Invoke(() => { _session.Detach(); return "ok"; }, 1000); }
+                            catch { /* if even this fails, let the next loop catch it */ }
                             try { _hookConnection.Disconnect(); } catch { }
 
                             try
@@ -528,11 +589,11 @@ public class DaemonServer
                                     }));
                             }
                             catch { }
-                            isAttached = false;
+                            isAttached = _session.IsAttached; // re-read after Detach
                         }
                     }
 
-                    if (!isAttached)
+                    if (!isAttached && !_staWorker.IsStuck)
                     {
                         var procs = System.Diagnostics.Process.GetProcessesByName("EXCEL");
                         try
@@ -542,8 +603,6 @@ public class DaemonServer
                                 int targetPid = procs[0].Id;
                                 try
                                 {
-                                    // Attach must run on the STA thread so the RCW
-                                    // is owned by the apartment that uses it later.
                                     _staWorker.Invoke(() => { _session.Attach(); return "ok"; }, 5000);
                                     if (_session.IsAttached)
                                     {
@@ -564,9 +623,6 @@ public class DaemonServer
                                 }
                                 catch (Exception ex)
                                 {
-                                    // Excel is loading or COM is busy. Don't spam
-                                    // the log on every retry — emit only every
-                                    // 10th failure (~20s of failed retries).
                                     consecutiveFailures++;
                                     if (consecutiveFailures % 10 == 1)
                                     {
@@ -586,7 +642,7 @@ public class DaemonServer
                     DaemonLog($"Auto-attach watchdog iteration error: {ex.Message}");
                 }
 
-                try { Thread.Sleep(2000); }
+                try { Thread.Sleep(sleepMs); }
                 catch { break; }
             }
             DaemonLog("Auto-attach watchdog stopped");
