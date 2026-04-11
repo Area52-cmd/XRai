@@ -1,6 +1,7 @@
 using XRai.Com;
 using XRai.Core;
 using XRai.HooksClient;
+using XRai.Studio;
 using XRai.UI;
 using XRai.Vision;
 using XRai.Tool;
@@ -63,6 +64,12 @@ class Program
                 case "dump-commands" or "--dump-commands":
                     // Build router (no attach), print all registered commands, exit
                     return DumpCommands();
+                case "set-ide":
+                    return SetIdeCommand(args, i);
+                case "get-ide":
+                    return GetIdeCommand();
+                case "ides":
+                    return ListIdesCommand();
             }
         }
 
@@ -728,6 +735,11 @@ class Program
         Console.WriteLine("  studio             Launch XRai Studio — live dashboard that watches your AI");
         Console.WriteLine("                     coding agent and your target app side-by-side.");
         Console.WriteLine("                     Equivalent to --studio. Auto-opens your browser.");
+        Console.WriteLine("  ides               List every editor Studio detects (installed + running)");
+        Console.WriteLine("  set-ide <kind>     Persist the user's preferred editor so Studio skips the");
+        Console.WriteLine("                     onboarding overlay. Kind = VSCode | VisualStudio | Rider.");
+        Console.WriteLine("                     Run this at the START of every greenfield session.");
+        Console.WriteLine("  get-ide            Print the currently-persisted editor preference");
         Console.WriteLine("  daemon             Run as the long-lived XRai daemon (no Studio dashboard)");
         Console.WriteLine("  daemon-status      Check whether the daemon is running");
         Console.WriteLine("  daemon-stop        Stop a running daemon");
@@ -745,10 +757,18 @@ class Program
         Console.WriteLine("  --repl             Persistent REPL mode (stdin-driven, stays attached)");
         Console.WriteLine("  --timeout <ms>     Default timeout per command (default: 15000)");
         Console.WriteLine();
+        Console.WriteLine("GREENFIELD QUICK START (AI agents: run these in order):");
+        Console.WriteLine("  1. xrai ides                          # see which editors are detected");
+        Console.WriteLine("  2. ASK the user which editor they use (VSCode / VisualStudio / Rider)");
+        Console.WriteLine("  3. xrai set-ide <their choice>        # persist so Studio picks it up");
+        Console.WriteLine("  4. xrai init MyAddin                  # scaffold the project");
+        Console.WriteLine("  5. (optional) xrai --studio           # launch dashboard in separate terminal");
+        Console.WriteLine();
         Console.WriteLine("STUDIO QUICK START:");
         Console.WriteLine("  XRai.Tool.exe --studio");
         Console.WriteLine("    → starts the daemon, launches the Studio web dashboard, opens your browser.");
-        Console.WriteLine("    → pick your IDE in the onboarding overlay, then watch your AI agent edit");
+        Console.WriteLine("    → if `xrai set-ide <kind>` was run first, the onboarding overlay is skipped.");
+        Console.WriteLine("    → otherwise pick your IDE in the overlay, then watch your AI agent edit");
         Console.WriteLine("      code live as Excel updates alongside.");
         Console.WriteLine("    → zero impact on the agent — Studio passively reads transcript files.");
         Console.WriteLine();
@@ -943,5 +963,132 @@ class Program
             Console.WriteLine($"  Warning: {remaining.Length} Excel process(es) still running.");
 
         return remaining.Length == 0 ? 0 : 1;
+    }
+
+    // ── IDE preference CLI ──────────────────────────────────────
+
+    /// <summary>
+    /// Persist a user IDE preference to Studio's preferences file so Studio
+    /// picks it up without showing the onboarding overlay. The typical flow:
+    /// at the start of a greenfield session the agent asks the user which
+    /// IDE they use, then runs `xrai set-ide &lt;kind&gt;`. Later when the user
+    /// launches `xrai --studio`, the onboarding overlay is skipped entirely.
+    ///
+    /// Usage:
+    ///   xrai set-ide VSCode
+    ///   xrai set-ide VisualStudio   (for VS 2022 or VS 2026)
+    ///   xrai set-ide Rider
+    /// </summary>
+    private static int SetIdeCommand(string[] args, int index)
+    {
+        if (index + 1 >= args.Length)
+        {
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("  xrai set-ide — set the preferred editor for Studio follow-mode");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("  Usage:  xrai set-ide <kind>");
+            Console.Error.WriteLine("          where <kind> is VSCode | VisualStudio | Rider");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("  This writes preferredIde + onboarded=true to Studio's preferences");
+            Console.Error.WriteLine("  file at %LOCALAPPDATA%\\XRai\\studio\\preferences.json. Studio picks");
+            Console.Error.WriteLine("  it up the next time you run `xrai --studio` and skips the overlay.");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("  Tip: run `xrai ides` to see which editors Studio detects on this");
+            Console.Error.WriteLine("  machine and which of them is currently running.");
+            return 1;
+        }
+
+        var kindArg = args[index + 1];
+        if (!Enum.TryParse<XRai.Studio.IdeLauncher.IdeKind>(kindArg, ignoreCase: true, out var kind) ||
+            kind == XRai.Studio.IdeLauncher.IdeKind.None ||
+            kind == XRai.Studio.IdeLauncher.IdeKind.Fallback)
+        {
+            Console.Error.WriteLine($"  Unknown IDE kind: '{kindArg}'");
+            Console.Error.WriteLine($"  Valid values: VSCode, VisualStudio, Rider");
+            return 1;
+        }
+
+        // Verify the chosen IDE is actually installed so the agent and user
+        // can see the problem immediately instead of later when follow-mode
+        // silently falls back to the default editor.
+        var all = XRai.Studio.IdeLauncher.DetectAll();
+        var info = all.FirstOrDefault(i => i.Kind == kind);
+        if (info == null || !info.Installed)
+        {
+            Console.Error.WriteLine();
+            Console.Error.WriteLine($"  WARNING: {kind} is not installed on this machine.");
+            if (info?.InstallUrl != null)
+                Console.Error.WriteLine($"  Install it from: {info.InstallUrl}");
+            Console.Error.WriteLine($"  Preference saved anyway — Studio will fall back to Windows file association");
+            Console.Error.WriteLine($"  for file opens until you install {kind}.");
+            Console.Error.WriteLine();
+        }
+
+        var prefs = XRai.Studio.StudioPreferences.Load();
+        prefs.PreferredIde = kind.ToString();
+        prefs.Onboarded = true;
+        if (!prefs.FollowMode) prefs.FollowMode = true;  // opt into follow mode on explicit set
+        prefs.Save();
+
+        Console.WriteLine();
+        Console.WriteLine($"  Editor preference saved: {kind}");
+        Console.WriteLine($"  Follow mode: {(prefs.FollowMode ? "on" : "off")}");
+        Console.WriteLine($"  Onboarded:   yes (Studio will skip the overlay)");
+        Console.WriteLine();
+        Console.WriteLine($"  Stored at: %LOCALAPPDATA%\\XRai\\studio\\preferences.json");
+        if (info != null)
+        {
+            Console.WriteLine($"  Detected:  {info.DisplayName} ({(info.Running ? "running" : info.Installed ? "installed" : "not installed")})");
+            if (info.ExecutablePath != null)
+                Console.WriteLine($"  At:        {info.ExecutablePath}");
+        }
+        Console.WriteLine();
+        Console.WriteLine("  Launch Studio with: xrai --studio");
+        Console.WriteLine();
+        return 0;
+    }
+
+    /// <summary>
+    /// Print the currently-persisted IDE preference. Used by the agent to
+    /// verify what Studio will pick up without having to launch it.
+    /// </summary>
+    private static int GetIdeCommand()
+    {
+        var prefs = XRai.Studio.StudioPreferences.Load();
+        Console.WriteLine();
+        Console.WriteLine("  Studio preferences:");
+        Console.WriteLine($"    preferredIde: {prefs.PreferredIde ?? "(not set)"}");
+        Console.WriteLine($"    followMode:   {prefs.FollowMode}");
+        Console.WriteLine($"    onboarded:    {prefs.Onboarded}");
+        Console.WriteLine($"    theme:        {prefs.Theme}");
+        Console.WriteLine();
+        return 0;
+    }
+
+    /// <summary>
+    /// List every IDE Studio knows about and its installed / running status.
+    /// Used by the agent to show the user their options before calling set-ide.
+    /// </summary>
+    private static int ListIdesCommand()
+    {
+        var all = XRai.Studio.IdeLauncher.DetectAll();
+        Console.WriteLine();
+        Console.WriteLine("  Editors detected on this machine:");
+        Console.WriteLine();
+        foreach (var i in all)
+        {
+            var status = i.Running ? "RUNNING"
+                       : i.Installed ? "installed"
+                       : "NOT installed";
+            Console.WriteLine($"    {i.Kind,-14} {status,-14} {i.DisplayName}");
+            if (i.ExecutablePath != null)
+                Console.WriteLine($"                    {i.ExecutablePath}");
+            else if (!i.Installed && i.InstallUrl != null)
+                Console.WriteLine($"                    install: {i.InstallUrl}");
+        }
+        Console.WriteLine();
+        Console.WriteLine("  Set the user's preference with: xrai set-ide <Kind>");
+        Console.WriteLine();
+        return 0;
     }
 }

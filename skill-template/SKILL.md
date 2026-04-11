@@ -61,10 +61,15 @@ allowed-tools: Bash, Read, Edit, Write, Glob, Grep
 ]}
 ```
 
-## CRITICAL: Ask before building
+## CRITICAL: Ask BEFORE building
 
-Ask these 6 questions before writing XAML/ViewModel code. Full option tables: `./reference/ux-guidance.md`
+Ask these 7 questions before writing ANY code on a greenfield project.
+Full option tables: `./reference/ux-guidance.md`
 
+0. **Editor** — Which IDE will you be using for this project? (VS Code, Visual
+   Studio 2022/2026, JetBrains Rider, other). This is asked FIRST because it
+   determines which IDE XRai Studio opens files in during follow-mode. See
+   "Editor preference" section below for the full flow.
 1. **Hosting** — floating window, docked CTP (which side?), or ribbon-only?
 2. **Theme** — dark (#1a1a2e), light, or match Excel?
 3. **Dimensions** — narrow (320px), standard (420px), or wide (560px)?
@@ -73,10 +78,41 @@ Ask these 6 questions before writing XAML/ViewModel code. Full option tables: `.
 6. **Ribbon** — custom tab? Tab name and button names?
 
 Store answers in the project's `CLAUDE.md` under `## Add-in UX Preferences`.
+The editor preference is ALSO persisted to XRai Studio's preferences file
+via the `xrai set-ide <kind>` command (see below) so Studio picks it up
+even if you don't launch it until later.
+
+## Editor preference — ask first, persist immediately
+
+At the start of any greenfield session:
+
+1. **Ask the user plainly** — "Which IDE will you use to build this? VS Code,
+   Visual Studio 2026, Rider, or another?" Default is VS Code if they
+   don't know. Don't assume.
+2. **Persist the answer immediately** by running:
+
+   ```
+   XRai.Tool.exe set-ide VSCode           # or VisualStudio / Rider
+   ```
+
+   This writes `preferredIde` to `%LOCALAPPDATA%\XRai\studio\preferences.json`
+   and marks the user as `onboarded`. XRai Studio (if/when launched) will
+   NOT show the onboarding overlay again — it uses the pre-set choice.
+
+3. **Tell the user about Studio** right after — *"If you want a live
+   dashboard that auto-opens files in `<their IDE>` as I edit them, run
+   `xrai --studio` in a separate terminal. Optional but recommended."*
+
+4. Proceed with the remaining 6 UX questions.
+
+This flow ensures the IDE decision is made BEFORE any build happens,
+answered by the USER not by heuristics, and persists into Studio without
+the user having to click through the onboarding overlay later.
 
 ## Cold start: empty folder to working add-in
 
-1. Ask UX questions (see above)
+1. **Ask editor + UX questions (see above)** — including running
+   `xrai set-ide <kind>` to persist the editor choice.
 2. Run: `XRai.Tool.exe init MyAddin`
 3. If init unavailable: see `./reference/setup-manual.md`
 4. `cd MyAddin`
