@@ -219,6 +219,32 @@ public sealed class StudioHost : IDisposable
                 return;
             }
 
+            if (path == "/studio/open-logs" && ctx.Request.Method == "POST")
+            {
+                try
+                {
+                    var logsDir = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "XRai", "logs");
+                    Directory.CreateDirectory(logsDir);
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "explorer.exe",
+                        Arguments = $"\"{logsDir}\"",
+                        UseShellExecute = true,
+                    });
+                    ctx.Response.ContentType = "application/json";
+                    await ctx.Response.WriteAsync(Response.Ok(new { path = logsDir }));
+                }
+                catch (Exception ex)
+                {
+                    ctx.Response.StatusCode = 500;
+                    ctx.Response.ContentType = "application/json";
+                    await ctx.Response.WriteAsync(Response.ErrorFromException(ex, "studio.open-logs"));
+                }
+                return;
+            }
+
             if (path == "/ide/open" && ctx.Request.Method == "POST")
             {
                 using var reader = new StreamReader(ctx.Request.Body);

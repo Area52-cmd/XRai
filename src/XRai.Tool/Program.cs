@@ -1,3 +1,5 @@
+using System.IO.Compression;
+using System.Text;
 using XRai.Com;
 using XRai.Core;
 using XRai.HooksClient;
@@ -70,6 +72,12 @@ class Program
                     return GetIdeCommand();
                 case "ides":
                     return ListIdesCommand();
+                case "logs":
+                    return LogsCommand(args, i);
+                case "bug-report":
+                    return BugReportCommand(args, i);
+                case "debug":
+                    return DebugCommand();
             }
         }
 
@@ -740,6 +748,17 @@ class Program
         Console.WriteLine("                     onboarding overlay. Kind = VSCode | VisualStudio | Rider.");
         Console.WriteLine("                     Run this at the START of every greenfield session.");
         Console.WriteLine("  get-ide            Print the currently-persisted editor preference");
+        Console.WriteLine();
+        Console.WriteLine("DIAGNOSTICS:");
+        Console.WriteLine("  debug              Full health summary: daemon, Studio prefs, IDEs, logs,");
+        Console.WriteLine("                     Excel processes. Run this FIRST when something's broken.");
+        Console.WriteLine("  logs               List all XRai log files with sizes + last-write times");
+        Console.WriteLine("  logs tail [--source daemon|pilot|startup] [--lines N]");
+        Console.WriteLine("                     Tail the last N lines of a log. Default: daemon, 50 lines");
+        Console.WriteLine("  logs open          Open the XRai log folder in Explorer");
+        Console.WriteLine("  bug-report [--out path]");
+        Console.WriteLine("                     Zip all logs + state into a shareable bundle for");
+        Console.WriteLine("                     attaching to bug reports. Default output: %TEMP%\\xrai-bugreport-*.zip");
         Console.WriteLine("  daemon             Run as the long-lived XRai daemon (no Studio dashboard)");
         Console.WriteLine("  daemon-status      Check whether the daemon is running");
         Console.WriteLine("  daemon-stop        Stop a running daemon");
@@ -1061,6 +1080,497 @@ class Program
         Console.WriteLine($"    followMode:   {prefs.FollowMode}");
         Console.WriteLine($"    onboarded:    {prefs.Onboarded}");
         Console.WriteLine($"    theme:        {prefs.Theme}");
+        Console.WriteLine();
+        return 0;
+    }
+
+    // ── Logging / diagnostics CLI ───────────────────────────────
+
+    private static string XraiRoot =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "XRai");
+    private static string XraiLogsDir => Path.Combine(XraiRoot, "logs");
+
+    /// <summary>
+    /// xrai logs — list / tail / open XRai log files. Sources:
+    ///   daemon   = %LOCALAPPDATA%\XRai\logs\daemon.log
+    ///   pilot    = %LOCALAPPDATA%\XRai\logs\pilot-{pid}.log (newest)
+    ///   startup  = %TEMP%\*-startup.log (newest)
+    /// </summary>
+    private static int LogsCommand(string[] args, int index)
+    {
+        // Parse sub-subcommand
+        var sub = (index + 1 < args.Length) ? args[index + 1] : "list";
+        var source = "daemon";
+        int lines = 50;
+
+        for (int i = index + 2; i < args.Length; i++)
+        {
+            if (args[i] == "--source" && i + 1 < args.Length) source = args[++i];
+            else if (args[i] == "--lines" && i + 1 < args.Length) int.TryParse(args[++i], out lines);
+        }
+
+        switch (sub)
+        {
+            case "list": return LogsListCommand();
+            case "tail": return LogsTailCommand(source, lines);
+            case "open": return LogsOpenCommand();
+            default:
+                Console.Error.WriteLine();
+                Console.Error.WriteLine("  xrai logs — list, tail, or open XRai log files");
+                Console.Error.WriteLine();
+                Console.Error.WriteLine("  Usage:");
+                Console.Error.WriteLine("    xrai logs                          # list all log files");
+                Console.Error.WriteLine("    xrai logs list                     # same as above");
+                Console.Error.WriteLine("    xrai logs tail [--source S] [--lines N]");
+                Console.Error.WriteLine("                                       # tail the last N lines");
+                Console.Error.WriteLine("                                       # source = daemon | pilot | startup");
+                Console.Error.WriteLine("                                       # defaults: daemon, 50 lines");
+                Console.Error.WriteLine("    xrai logs open                     # open the log folder in Explorer");
+                Console.Error.WriteLine();
+                return 1;
+        }
+    }
+
+    private static int LogsListCommand()
+    {
+        Console.WriteLine();
+        Console.WriteLine("  XRai log files on this machine:");
+        Console.WriteLine();
+
+        int count = 0;
+
+        // Daemon log
+        var daemonLog = Path.Combine(XraiLogsDir, "daemon.log");
+        if (File.Exists(daemonLog))
+        {
+            var fi = new FileInfo(daemonLog);
+            Console.WriteLine($"    daemon.log       {fi.Length / 1024,6} KB  {fi.LastWriteTime:yyyy-MM-dd HH:mm:ss}");
+            Console.WriteLine($"                     {daemonLog}");
+            count++;
+        }
+
+        // Pilot logs (one per Excel PID that ever ran Pilot.Start)
+        if (Directory.Exists(XraiLogsDir))
+        {
+            try
+            {
+                foreach (var file in Directory.GetFiles(XraiLogsDir, "pilot-*.log")
+                    .OrderByDescending(f => new FileInfo(f).LastWriteTimeUtc))
+                {
+                    var fi = new FileInfo(file);
+                    Console.WriteLine($"    {Path.GetFileName(file),-16} {fi.Length / 1024,6} KB  {fi.LastWriteTime:yyyy-MM-dd HH:mm:ss}");
+                    Console.WriteLine($"                     {file}");
+                    count++;
+                }
+            }
+            catch { }
+        }
+
+        // Scaffold startup logs
+        var tempDir = Path.GetTempPath();
+        try
+        {
+            foreach (var file in Directory.GetFiles(tempDir, "*-startup.log")
+                .OrderByDescending(f => new FileInfo(f).LastWriteTimeUtc)
+                .Take(5))
+            {
+                var fi = new FileInfo(file);
+                Console.WriteLine($"    {Path.GetFileName(file),-16} {fi.Length / 1024,6} KB  {fi.LastWriteTime:yyyy-MM-dd HH:mm:ss}");
+                Console.WriteLine($"                     {file}");
+                count++;
+            }
+        }
+        catch { }
+
+        Console.WriteLine();
+        if (count == 0)
+        {
+            Console.WriteLine("  No log files found. Run `xrai --studio` to start the daemon.");
+        }
+        else
+        {
+            Console.WriteLine($"  {count} log file(s). Tail one with: xrai logs tail --source <daemon|pilot|startup>");
+            Console.WriteLine("  Open the folder in Explorer with: xrai logs open");
+        }
+        Console.WriteLine();
+        return 0;
+    }
+
+    private static int LogsTailCommand(string source, int lines)
+    {
+        string? path = null;
+        switch (source.ToLowerInvariant())
+        {
+            case "daemon":
+                path = Path.Combine(XraiLogsDir, "daemon.log");
+                break;
+            case "pilot":
+                if (Directory.Exists(XraiLogsDir))
+                {
+                    path = Directory.GetFiles(XraiLogsDir, "pilot-*.log")
+                        .OrderByDescending(f => new FileInfo(f).LastWriteTimeUtc)
+                        .FirstOrDefault();
+                }
+                break;
+            case "startup":
+                path = Directory.GetFiles(Path.GetTempPath(), "*-startup.log")
+                    .OrderByDescending(f => new FileInfo(f).LastWriteTimeUtc)
+                    .FirstOrDefault();
+                break;
+            default:
+                Console.Error.WriteLine($"  Unknown log source '{source}'. Valid: daemon, pilot, startup.");
+                return 1;
+        }
+
+        if (path == null || !File.Exists(path))
+        {
+            Console.Error.WriteLine($"  No {source} log file found.");
+            Console.Error.WriteLine($"  Run `xrai logs` to see which log files exist on this machine.");
+            return 1;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"  ── {Path.GetFileName(path)} — last {lines} lines ──");
+        Console.WriteLine();
+
+        try
+        {
+            var all = File.ReadAllLines(path);
+            var tail = all.Length > lines ? all[^lines..] : all;
+            foreach (var line in tail) Console.WriteLine($"  {line}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  Could not read log: {ex.Message}");
+            return 1;
+        }
+
+        Console.WriteLine();
+        return 0;
+    }
+
+    private static int LogsOpenCommand()
+    {
+        if (!Directory.Exists(XraiLogsDir))
+        {
+            Directory.CreateDirectory(XraiLogsDir);
+        }
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"\"{XraiLogsDir}\"",
+                UseShellExecute = true,
+            });
+            Console.WriteLine($"  Opened: {XraiLogsDir}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  Could not open folder: {ex.Message}");
+            Console.Error.WriteLine($"  Path: {XraiLogsDir}");
+            return 1;
+        }
+    }
+
+    /// <summary>
+    /// xrai bug-report — collect all XRai logs + state into a single zip
+    /// the user can hand off when reporting an issue. Includes:
+    ///   - daemon.log
+    ///   - all pilot-*.log
+    ///   - recent %TEMP%\*-startup.log
+    ///   - xrai status output (JSON)
+    ///   - studio preferences
+    ///   - xrai get-ide output
+    ///   - a README.txt with XRai version + timestamp + the set of files
+    /// </summary>
+    private static int BugReportCommand(string[] args, int index)
+    {
+        string? outPath = null;
+        for (int i = index + 1; i < args.Length; i++)
+        {
+            if (args[i] == "--out" && i + 1 < args.Length) outPath = args[++i];
+        }
+
+        outPath ??= Path.Combine(Path.GetTempPath(),
+            $"xrai-bugreport-{DateTime.UtcNow:yyyyMMdd-HHmmss}.zip");
+
+        Console.WriteLine();
+        Console.WriteLine("  Collecting XRai diagnostic bundle...");
+        Console.WriteLine();
+
+        var stagingDir = Path.Combine(Path.GetTempPath(),
+            $"xrai-bugreport-staging-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(stagingDir);
+
+        int filesCollected = 0;
+
+        try
+        {
+            // README.txt
+            var toolAsm = typeof(Program).Assembly;
+            var toolStamp = toolAsm.GetCustomAttributes(typeof(System.Reflection.AssemblyMetadataAttribute), false)
+                .OfType<System.Reflection.AssemblyMetadataAttribute>()
+                .FirstOrDefault(a => a.Key == "XRaiToolBuildTimestamp")?.Value ?? "unknown";
+
+            var readme = new StringBuilder();
+            readme.AppendLine("XRai diagnostic bundle");
+            readme.AppendLine("======================");
+            readme.AppendLine();
+            readme.AppendLine($"Generated:     {DateTime.UtcNow:o}");
+            readme.AppendLine($"XRai.Tool:     {toolAsm.Location}");
+            readme.AppendLine($"Tool build:    {toolStamp}");
+            readme.AppendLine($"User:          {Environment.UserDomainName}\\{Environment.UserName}");
+            readme.AppendLine($"Machine:       {Environment.MachineName}");
+            readme.AppendLine($"OS:            {Environment.OSVersion}");
+            readme.AppendLine($".NET version:  {Environment.Version}");
+            readme.AppendLine();
+            readme.AppendLine("Files included in this bundle:");
+            readme.AppendLine("  README.txt       — this file");
+            readme.AppendLine("  daemon.log       — XRai daemon log (if present)");
+            readme.AppendLine("  pilot-*.log      — add-in side logs from XRai.Hooks (if present)");
+            readme.AppendLine("  startup-*.log    — recent scaffold AutoOpen startup logs (if present)");
+            readme.AppendLine("  preferences.json — Studio preferences");
+            readme.AppendLine("  status.txt       — xrai get-ide + environment summary");
+            File.WriteAllText(Path.Combine(stagingDir, "README.txt"), readme.ToString());
+            filesCollected++;
+
+            // Daemon log
+            var daemonLog = Path.Combine(XraiLogsDir, "daemon.log");
+            if (File.Exists(daemonLog))
+            {
+                File.Copy(daemonLog, Path.Combine(stagingDir, "daemon.log"));
+                filesCollected++;
+                Console.WriteLine($"    + daemon.log");
+            }
+
+            // Pilot logs
+            if (Directory.Exists(XraiLogsDir))
+            {
+                foreach (var f in Directory.GetFiles(XraiLogsDir, "pilot-*.log"))
+                {
+                    File.Copy(f, Path.Combine(stagingDir, Path.GetFileName(f)));
+                    filesCollected++;
+                    Console.WriteLine($"    + {Path.GetFileName(f)}");
+                }
+            }
+
+            // Startup logs (last 5 by mtime)
+            try
+            {
+                foreach (var f in Directory.GetFiles(Path.GetTempPath(), "*-startup.log")
+                    .OrderByDescending(p => new FileInfo(p).LastWriteTimeUtc)
+                    .Take(5))
+                {
+                    var dest = Path.Combine(stagingDir, "startup-" + Path.GetFileName(f));
+                    File.Copy(f, dest);
+                    filesCollected++;
+                    Console.WriteLine($"    + {Path.GetFileName(dest)}");
+                }
+            }
+            catch { }
+
+            // Studio preferences
+            try
+            {
+                var prefsPath = Path.Combine(XraiRoot, "studio", "preferences.json");
+                if (File.Exists(prefsPath))
+                {
+                    File.Copy(prefsPath, Path.Combine(stagingDir, "preferences.json"));
+                    filesCollected++;
+                    Console.WriteLine($"    + preferences.json");
+                }
+            }
+            catch { }
+
+            // Environment summary
+            var envSummary = new StringBuilder();
+            envSummary.AppendLine($"XRai.Tool location: {toolAsm.Location}");
+            envSummary.AppendLine($"Build timestamp:    {toolStamp}");
+            envSummary.AppendLine();
+            try
+            {
+                var prefs = XRai.Studio.StudioPreferences.Load();
+                envSummary.AppendLine("Studio preferences:");
+                envSummary.AppendLine($"  preferredIde: {prefs.PreferredIde ?? "(not set)"}");
+                envSummary.AppendLine($"  followMode:   {prefs.FollowMode}");
+                envSummary.AppendLine($"  onboarded:    {prefs.Onboarded}");
+                envSummary.AppendLine($"  theme:        {prefs.Theme}");
+                envSummary.AppendLine();
+            }
+            catch { }
+            envSummary.AppendLine("IDEs detected:");
+            try
+            {
+                var ides = XRai.Studio.IdeLauncher.DetectAll();
+                foreach (var i in ides)
+                {
+                    envSummary.AppendLine($"  {i.Kind,-14} installed={i.Installed} running={i.Running} path={i.ExecutablePath}");
+                }
+            }
+            catch (Exception ex) { envSummary.AppendLine($"  (detection failed: {ex.Message})"); }
+            File.WriteAllText(Path.Combine(stagingDir, "status.txt"), envSummary.ToString());
+            filesCollected++;
+
+            // Zip it up
+            if (File.Exists(outPath)) File.Delete(outPath);
+            System.IO.Compression.ZipFile.CreateFromDirectory(stagingDir, outPath);
+
+            Console.WriteLine();
+            Console.WriteLine($"  {filesCollected} file(s) collected.");
+            Console.WriteLine($"  Bundle: {outPath}");
+            Console.WriteLine($"  Size:   {new FileInfo(outPath).Length / 1024} KB");
+            Console.WriteLine();
+            Console.WriteLine("  Attach this zip to the bug report.");
+            Console.WriteLine();
+
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  Bug report failed: {ex.Message}");
+            return 1;
+        }
+        finally
+        {
+            try { Directory.Delete(stagingDir, recursive: true); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// xrai debug — full health summary printed to the terminal.
+    /// Not a file operation; a human-readable snapshot of every
+    /// piece of state that matters for diagnosing XRai issues.
+    /// </summary>
+    private static int DebugCommand()
+    {
+        Console.WriteLine();
+        Console.WriteLine("  ==================================================================");
+        Console.WriteLine("    XRai — Debug summary");
+        Console.WriteLine("  ==================================================================");
+        Console.WriteLine();
+
+        // Environment
+        var toolAsm = typeof(Program).Assembly;
+        var toolStamp = toolAsm.GetCustomAttributes(typeof(System.Reflection.AssemblyMetadataAttribute), false)
+            .OfType<System.Reflection.AssemblyMetadataAttribute>()
+            .FirstOrDefault(a => a.Key == "XRaiToolBuildTimestamp")?.Value ?? "unknown";
+
+        Console.WriteLine("  Environment");
+        Console.WriteLine($"    XRai.Tool:      {toolAsm.Location}");
+        Console.WriteLine($"    Tool build:     {toolStamp}");
+        Console.WriteLine($"    OS:             {Environment.OSVersion}");
+        Console.WriteLine($"    .NET:           {Environment.Version}");
+        Console.WriteLine($"    User:           {Environment.UserDomainName}\\{Environment.UserName}");
+        Console.WriteLine($"    XRai root:      {XraiRoot}");
+        Console.WriteLine();
+
+        // Daemon status
+        Console.WriteLine("  Daemon");
+        if (DaemonServer.IsDaemonRunning())
+        {
+            Console.WriteLine($"    status:         running");
+            Console.WriteLine($"    pipe:           xrai_daemon_{Environment.MachineName}_{Environment.UserName}");
+        }
+        else
+        {
+            Console.WriteLine($"    status:         not running");
+            Console.WriteLine($"    hint:           start with `xrai --studio` or `xrai --daemon`");
+        }
+        Console.WriteLine();
+
+        // Studio preferences
+        Console.WriteLine("  Studio preferences");
+        try
+        {
+            var prefs = XRai.Studio.StudioPreferences.Load();
+            Console.WriteLine($"    preferredIde:   {prefs.PreferredIde ?? "(not set)"}");
+            Console.WriteLine($"    followMode:     {prefs.FollowMode}");
+            Console.WriteLine($"    onboarded:      {prefs.Onboarded}");
+            Console.WriteLine($"    theme:          {prefs.Theme}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"    ERROR:          {ex.Message}");
+        }
+        Console.WriteLine();
+
+        // IDEs detected
+        Console.WriteLine("  IDEs");
+        try
+        {
+            var ides = XRai.Studio.IdeLauncher.DetectAll();
+            foreach (var i in ides)
+            {
+                var status = i.Running ? "RUNNING    "
+                           : i.Installed ? "installed  "
+                           : "not installed";
+                Console.WriteLine($"    {i.Kind,-14} {status}  {i.ExecutablePath ?? ""}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"    ERROR: {ex.Message}");
+        }
+        Console.WriteLine();
+
+        // Log files
+        Console.WriteLine("  Log files");
+        var daemonLog = Path.Combine(XraiLogsDir, "daemon.log");
+        if (File.Exists(daemonLog))
+        {
+            var fi = new FileInfo(daemonLog);
+            Console.WriteLine($"    daemon.log      {fi.Length / 1024} KB  last write {fi.LastWriteTime:HH:mm:ss}");
+        }
+        if (Directory.Exists(XraiLogsDir))
+        {
+            try
+            {
+                var pilots = Directory.GetFiles(XraiLogsDir, "pilot-*.log");
+                if (pilots.Length > 0)
+                    Console.WriteLine($"    pilot logs:     {pilots.Length} file(s)");
+            }
+            catch { }
+        }
+        try
+        {
+            var startups = Directory.GetFiles(Path.GetTempPath(), "*-startup.log");
+            if (startups.Length > 0)
+                Console.WriteLine($"    startup logs:   {startups.Length} file(s) in %TEMP%");
+        }
+        catch { }
+        Console.WriteLine();
+
+        // Excel processes
+        Console.WriteLine("  Excel processes");
+        try
+        {
+            var procs = System.Diagnostics.Process.GetProcessesByName("EXCEL");
+            if (procs.Length == 0)
+            {
+                Console.WriteLine("    (none running)");
+            }
+            else
+            {
+                foreach (var p in procs)
+                {
+                    Console.WriteLine($"    pid={p.Id}  mem={p.WorkingSet64 / 1024 / 1024} MB  title={p.MainWindowTitle}");
+                    try { p.Dispose(); } catch { }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"    ERROR: {ex.Message}");
+        }
+        Console.WriteLine();
+
+        Console.WriteLine("  Next steps");
+        Console.WriteLine("    xrai logs list              # list all log files");
+        Console.WriteLine("    xrai logs tail              # tail the last 50 lines of daemon.log");
+        Console.WriteLine("    xrai logs open              # open the log folder in Explorer");
+        Console.WriteLine("    xrai bug-report             # zip everything for sharing with a debugger");
         Console.WriteLine();
         return 0;
     }

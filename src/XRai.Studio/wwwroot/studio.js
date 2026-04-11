@@ -1280,8 +1280,18 @@ function wireControls() {
       toast(`sta.reset error: ${err}`, "err");
     }
   });
-  $("#settings-open-logs")?.addEventListener("click", () => {
-    toast("Log folder: %LOCALAPPDATA%\\XRai\\logs\\", "info", 4000);
+  $("#settings-open-logs")?.addEventListener("click", async () => {
+    try {
+      const res = await fetch("/studio/open-logs", { method: "POST" });
+      const result = await res.json();
+      if (result.ok) {
+        toast(`Opened ${result.path}`, "ok", 3000);
+      } else {
+        toast(`Could not open log folder: ${result.error}`, "err", 5000);
+      }
+    } catch (err) {
+      toast(`Could not open log folder: ${err}`, "err", 5000);
+    }
   });
 
   $("#btn-clear").addEventListener("click", () => {
