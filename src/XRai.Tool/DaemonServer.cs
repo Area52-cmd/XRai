@@ -152,11 +152,26 @@ public class DaemonServer
     public bool StudioEnabled { get; set; }
 
     /// <summary>
+    /// When true (default), the Studio host auto-opens the user's default
+    /// browser to the dashboard URL when it starts. Smoke tests pass false
+    /// via --studio --no-browser so headless test runs don't pop browser
+    /// windows on the developer.
+    /// </summary>
+    public bool StudioLaunchBrowser { get; set; } = true;
+
+    /// <summary>
     /// The live Studio host, or null if studio was never started in this
     /// daemon. Kept on the server so {"cmd":"studio"} can report its URL
     /// back to callers without having to restart the daemon.
     /// </summary>
     private XRai.Studio.StudioHost? _studioHost;
+
+    /// <summary>
+    /// Decorator wrapper for _router.Dispatch that publishes command.start /
+    /// command.end events onto the Studio event bus. When Studio is not
+    /// enabled, this is null and HandleClient calls _router.Dispatch directly.
+    /// </summary>
+    private XRai.Studio.Sources.RouterEventSource? _studioRouterEventSource;
 
     /// <summary>
     /// True if the daemon pipe was created with the restricted per-user ACL.
@@ -344,24 +359,16 @@ public class DaemonServer
                 return _router.Dispatch(obj.ToJsonString());
             });
 
-        var url = _studioHost.Start(launchBrowser: true);
+        var url = _studioHost.Start(launchBrowser: StudioLaunchBrowser);
         Console.WriteLine($"[xrai-daemon] Studio ready: {url}");
         DaemonLog($"Studio started at {url}");
 
+        // ── Source: add-in pipe events ──────────────────────────────
         // Wire the add-in's in-process events (via hooks pipe) to the bus.
-        // Every PushEvent line read from the hooks pipe gets re-emitted on
-        // the Studio event bus so the dashboard sees them without polling.
         var pipeSource = new XRai.Studio.Sources.PipeEventSource(_studioHost.Bus);
         _studioHost.RegisterDisposable(pipeSource);
 
-        // Wrap the HookConnection's line reader to tee events into the bus.
-        // Best-effort — if the pipe is disconnected nothing happens until
-        // reconnect, at which point the existing lines flow normally.
-        // (For MVP we rely on command.end events and file/frame events; a
-        // richer hookup lives in Phase 2.)
-
-        // Start the screenshot capture loop. Provides a live hwnd via a
-        // callback that re-probes each frame, so it survives rebuilds.
+        // ── Source: live screenshot stream ──────────────────────────
         var captureLoop = new XRai.Studio.Sources.CaptureLoop(
             _studioHost.Bus,
             () =>
@@ -369,8 +376,6 @@ public class DaemonServer
                 try
                 {
                     if (!_session.IsAttached) return (nint?)null;
-                    // Read the hwnd through the STA worker — Application.Hwnd
-                    // is a COM property and must be touched on the STA thread.
                     nint hwnd = 0;
                     try
                     {
@@ -384,9 +389,50 @@ public class DaemonServer
         captureLoop.Start();
         _studioHost.RegisterDisposable(captureLoop);
 
-        // Make the router's rebuild flow publish per-step events to the bus.
-        // Done via the ReloadOrchestrator.StepReporterFactory hook added
-        // for exactly this reason.
+        // ── Source: AI coding agent transcript tail ─────────────────
+        // Auto-detect which agent is running (Claude Code today, Codex/Cursor/
+        // Aider in the future) and tail its transcript for live agent events.
+        try
+        {
+            var agentAdapter = XRai.Studio.Sources.Agents.AgentAdapterFactory.Detect(_studioHost.Bus);
+            agentAdapter.Start();
+            _studioHost.RegisterDisposable(agentAdapter);
+            DaemonLog($"Studio agent adapter: {agentAdapter.AgentName} (connected: {agentAdapter.IsConnected})");
+        }
+        catch (Exception agentEx)
+        {
+            DaemonLog($"Studio agent adapter failed to start: {agentEx.Message}");
+        }
+
+        // ── Source: project file watcher ────────────────────────────
+        // Watches the current working directory for .cs/.xaml/etc edits and
+        // publishes file.changed events. Pairs with the agent transcript:
+        // the agent announces the edit intent (agent.tool.use), the file
+        // watcher confirms the actual file landing.
+        try
+        {
+            var cwd = Directory.GetCurrentDirectory();
+            if (Directory.Exists(cwd))
+            {
+                var fileWatcher = new XRai.Studio.Sources.FileWatcherSource(_studioHost.Bus, cwd);
+                fileWatcher.Start();
+                _studioHost.RegisterDisposable(fileWatcher);
+                DaemonLog($"Studio file watcher: {cwd}");
+            }
+        }
+        catch (Exception fwEx)
+        {
+            DaemonLog($"Studio file watcher failed to start: {fwEx.Message}");
+        }
+
+        // ── Source: command router events ──────────────────────────
+        // Wraps every router dispatch with command.start / command.end events.
+        // The daemon's HandleClient already logs commands, but this source
+        // gives the dashboard a real-time stream of what's being dispatched.
+        _studioRouterEventSource = new XRai.Studio.Sources.RouterEventSource(_studioHost.Bus);
+        _studioHost.RegisterDisposable(_studioRouterEventSource);
+
+        // ── Rebuild progress instrumentation ────────────────────────
         _reloadOrchestrator.StepReporterFactory = () =>
             new TeeStepReporter((step, status, elapsedMs, detail) =>
             {
@@ -538,10 +584,18 @@ public class DaemonServer
                     // through the StaComWorker. Multiple client handler threads
                     // may call Dispatch concurrently; the worker serializes their
                     // work via its single-threaded queue, so COM calls never race.
+                    //
+                    // When Studio is enabled, we route through RouterEventSource
+                    // which publishes command.start / command.end events to the
+                    // Studio bus alongside the normal dispatch. The wrapper is
+                    // transparent to the CLI contract.
                     string response;
                     try
                     {
-                        response = _router.Dispatch(line);
+                        if (_studioRouterEventSource != null)
+                            response = _studioRouterEventSource.WrapDispatch(line, _router.Dispatch);
+                        else
+                            response = _router.Dispatch(line);
                     }
                     catch (Exception ex)
                     {

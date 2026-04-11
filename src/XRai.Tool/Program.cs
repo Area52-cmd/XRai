@@ -42,8 +42,14 @@ class Program
                     // Run as the long-lived daemon process
                     return new DaemonServer().Run();
                 case "--studio" or "studio":
-                    // Run as daemon with the Studio web dashboard enabled
-                    return new DaemonServer { StudioEnabled = true }.Run();
+                    // Run as daemon with the Studio web dashboard enabled.
+                    // Browser launches automatically by default. Pass
+                    // --no-browser to suppress (used by smoke tests).
+                    return new DaemonServer
+                    {
+                        StudioEnabled = true,
+                        StudioLaunchBrowser = !args.Contains("--no-browser") && !args.Contains("--studio-no-browser"),
+                    }.Run();
                 case "daemon-status":
                     return DaemonStatus();
                 case "daemon-stop":

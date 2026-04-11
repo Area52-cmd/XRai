@@ -180,6 +180,86 @@ public sealed class StudioHost : IDisposable
                 return;
             }
 
+            if (path == "/ides")
+            {
+                var ides = IdeLauncher.DetectAll();
+                var arr = new System.Text.Json.Nodes.JsonArray();
+                foreach (var i in ides) arr.Add(i.ToJson());
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(arr.ToJsonString());
+                return;
+            }
+
+            if (path == "/preferences" && ctx.Request.Method == "GET")
+            {
+                var prefs = StudioPreferences.Load();
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(prefs.ToJson().ToJsonString());
+                return;
+            }
+
+            if (path == "/preferences" && ctx.Request.Method == "POST")
+            {
+                using var reader = new StreamReader(ctx.Request.Body);
+                var body = await reader.ReadToEndAsync();
+                try
+                {
+                    var node = System.Text.Json.Nodes.JsonNode.Parse(body);
+                    var prefs = StudioPreferences.FromJson(node);
+                    prefs.Save();
+                    ctx.Response.ContentType = "application/json";
+                    await ctx.Response.WriteAsync(prefs.ToJson().ToJsonString());
+                }
+                catch (Exception ex)
+                {
+                    ctx.Response.StatusCode = 400;
+                    await ctx.Response.WriteAsync($"{{\"ok\":false,\"error\":\"{ex.Message}\"}}");
+                }
+                return;
+            }
+
+            if (path == "/ide/open" && ctx.Request.Method == "POST")
+            {
+                using var reader = new StreamReader(ctx.Request.Body);
+                var body = await reader.ReadToEndAsync();
+                try
+                {
+                    var node = System.Text.Json.Nodes.JsonNode.Parse(body) as System.Text.Json.Nodes.JsonObject;
+                    var filePath = node?["filePath"]?.GetValue<string>();
+                    var line = node?["line"]?.GetValue<int?>();
+                    var kindStr = node?["kind"]?.GetValue<string?>();
+                    IdeLauncher.IdeKind? kind = null;
+                    if (!string.IsNullOrEmpty(kindStr) &&
+                        Enum.TryParse<IdeLauncher.IdeKind>(kindStr, out var parsed))
+                    {
+                        kind = parsed;
+                    }
+
+                    System.Text.Json.Nodes.JsonObject result;
+                    if (string.IsNullOrEmpty(filePath))
+                    {
+                        // No file path means "launch the IDE itself"
+                        if (kind.HasValue)
+                            result = IdeLauncher.LaunchBlank(kind.Value);
+                        else
+                            result = new System.Text.Json.Nodes.JsonObject { ["ok"] = false, ["error"] = "filePath or kind is required" };
+                    }
+                    else
+                    {
+                        result = IdeLauncher.Open(filePath, line, null, kind);
+                    }
+
+                    ctx.Response.ContentType = "application/json";
+                    await ctx.Response.WriteAsync(result.ToJsonString());
+                }
+                catch (Exception ex)
+                {
+                    ctx.Response.StatusCode = 500;
+                    await ctx.Response.WriteAsync($"{{\"ok\":false,\"error\":\"{ex.Message}\"}}");
+                }
+                return;
+            }
+
             if (path == "/command" && ctx.Request.Method == "POST")
             {
                 await HandleCommand(ctx);

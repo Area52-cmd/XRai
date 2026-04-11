@@ -7,79 +7,168 @@
 <link rel="stylesheet" href="/studio.css">
 </head>
 <body>
+  <!-- Startup overlay: detects installed IDEs, offers the follow-mode
+       opt-in, and guides the user to install one if nothing is found. -->
+  <div id="startup-overlay" class="overlay hidden">
+    <div class="overlay-backdrop"></div>
+    <div class="overlay-card">
+      <div class="overlay-brand">
+        <span class="logo">✦</span>
+        <span class="brand-text">XRai <span class="brand-accent">Studio</span></span>
+      </div>
+      <div class="overlay-title">Watch your code come alive</div>
+      <div class="overlay-sub">
+        As your AI agent edits files, Studio will open each file in your IDE
+        automatically and show you Excel updating alongside. You stay in your
+        own editor — Studio just points it at the right place.
+      </div>
+
+      <div id="ide-choices" class="ide-choices"></div>
+
+      <div class="overlay-actions">
+        <label class="overlay-check">
+          <input type="checkbox" id="follow-toggle" checked>
+          Follow Claude's edits automatically in the selected IDE
+        </label>
+        <div class="overlay-buttons">
+          <button id="overlay-skip" class="btn btn-ghost">Just watch, don't follow</button>
+          <button id="overlay-continue" class="btn btn-primary">Continue</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <header id="topbar">
     <div class="brand">
       <span class="logo">✦</span>
-      <span class="name">XRai Studio</span>
+      <span class="name">XRai <span class="name-accent">Studio</span></span>
+      <span class="tagline">live desktop AI dev</span>
     </div>
-    <div class="status" id="status-chip">
+
+    <div class="chip" id="chip-agent" title="The AI coding agent Studio is watching (Claude Code, Codex, Cursor, etc).">
+      <span class="chip-label">Agent</span>
+      <span class="dot" id="agent-dot"></span>
+      <span id="agent-name">idle</span>
+    </div>
+
+    <div class="chip" id="chip-target" title="The running app you're building (e.g. Excel). Studio attaches to it to show live screenshots and state.">
+      <span class="chip-label">App</span>
       <span class="dot" id="attach-dot"></span>
-      <span id="attach-text">connecting…</span>
+      <span id="attach-text">ready (no app open)</span>
     </div>
-    <div class="status" id="build-chip">
-      <span id="build-text">build —</span>
+
+    <div class="chip" id="chip-ide" title="Your code editor. Studio opens files there as the AI edits them.">
+      <span class="chip-label">Editor</span>
+      <span class="dot" id="ide-dot"></span>
+      <span id="ide-name">—</span>
     </div>
-    <div class="status" id="subs-chip">
-      <span id="subs-text">— events</span>
+
+    <div class="chip" id="chip-events" title="Total events Studio has received from the agent, file watcher, and target app.">
+      <span id="events-count">0</span>
+      <span class="chip-label">live updates</span>
     </div>
+
     <div class="spacer"></div>
-    <button id="btn-pause" class="btn" title="Pause capture stream (Space)">⏸ Pause</button>
-    <button id="btn-record" class="btn" title="Start session recording (future)">⏺ Record</button>
+
+    <button id="btn-follow" class="btn btn-toggle" title="Auto-open edited files in your IDE">
+      <span class="btn-icon">↳</span> <span id="follow-label">Follow: off</span>
+    </button>
+    <button id="btn-pause" class="btn" title="Pause live frame stream (Space)">
+      <span class="btn-icon">⏸</span> Pause
+    </button>
+    <button id="btn-clear" class="btn" title="Clear all panels">
+      <span class="btn-icon">✕</span> Clear
+    </button>
   </header>
 
   <main id="grid">
-    <section id="panel-screenshot" class="panel">
-      <div class="panel-header">Live target</div>
+    <!-- LEFT: live target screenshot — the biggest panel -->
+    <section id="panel-screenshot" class="panel panel-screenshot">
+      <div class="panel-header" title="Live screenshot of the running app you're building, refreshed several times a second.">
+        <span class="header-dot live-dot"></span>
+        Live target
+        <span class="panel-meta" id="frame-meta"></span>
+      </div>
       <div class="panel-body">
         <div id="screenshot-stage">
-          <img id="screenshot-img" alt="Waiting for frames…">
+          <img id="screenshot-img" alt="">
           <div id="screenshot-empty" class="empty-hint">
-            No frames yet. Attach to a target application — any Windows app with a window handle.
+            <div class="empty-title">Waiting for target</div>
+            <div class="empty-sub">Attach to a target application — any Windows app with a window handle.</div>
           </div>
         </div>
       </div>
     </section>
 
-    <section id="panel-files" class="panel">
-      <div class="panel-header">Project files</div>
+    <!-- CENTER: live agent feed — the activity narration -->
+    <section id="panel-agent" class="panel panel-agent">
+      <div class="panel-header" title="A live narration of what the AI is thinking and doing — every message, every file edit, every command.">
+        <span class="header-dot agent-dot"></span>
+        Agent activity
+        <span class="panel-meta" id="agent-meta"></span>
+      </div>
       <div class="panel-body">
-        <ul id="files-list" class="scroll-list"></ul>
-        <div id="files-empty" class="empty-hint">No file events yet.</div>
+        <div id="agent-feed" class="agent-feed"></div>
+        <div id="agent-empty" class="empty-hint">
+          <div class="empty-title">Waiting for the agent</div>
+          <div class="empty-sub">Start a Claude Code, Codex, or Cursor session and every thought, edit, and tool call will stream here live.</div>
+        </div>
       </div>
     </section>
 
-    <section id="panel-model" class="panel">
-      <div class="panel-header">ViewModel</div>
+    <!-- RIGHT: stacked utility panels -->
+    <section id="panel-files" class="panel panel-files">
+      <div class="panel-header" title="Files the agent has just edited or created. Click any file to open it in your IDE.">
+        <span class="header-dot files-dot"></span>
+        Files touched
+      </div>
+      <div class="panel-body">
+        <ul id="files-list" class="scroll-list files-list"></ul>
+        <div id="files-empty" class="empty-hint">
+          <div class="empty-sub">Files the AI edits will appear here. Click any file to jump to it in your IDE.</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-model" class="panel panel-model">
+      <div class="panel-header" title="Live state of the running app — values, properties, and inputs that change while you build.">
+        <span class="header-dot model-dot"></span>
+        App state
+      </div>
       <div class="panel-body">
         <table id="model-table" class="kv-table">
           <tbody></tbody>
         </table>
-        <div id="model-empty" class="empty-hint">Waiting for <code>model.exposed</code>…</div>
+        <div id="model-empty" class="empty-hint">
+          <div class="empty-sub">Live values from the running app will appear here.</div>
+        </div>
       </div>
     </section>
 
-    <section id="panel-commands" class="panel">
-      <div class="panel-header">Command stream</div>
-      <div class="panel-body">
-        <ol id="commands-list" class="scroll-list" reversed></ol>
-        <div id="commands-empty" class="empty-hint">No commands dispatched yet.</div>
+    <section id="panel-build" class="panel panel-build">
+      <div class="panel-header" title="Step-by-step progress when the AI rebuilds the running app.">
+        <span class="header-dot build-dot"></span>
+        Build progress
       </div>
-    </section>
-
-    <section id="panel-build" class="panel">
-      <div class="panel-header">Build console</div>
       <div class="panel-body">
-        <ul id="build-list" class="scroll-list"></ul>
-        <div id="build-empty" class="empty-hint">No build in flight yet.</div>
+        <ul id="build-list" class="scroll-list build-list"></ul>
+        <div id="build-empty" class="empty-hint">
+          <div class="empty-sub">Build progress will appear here when the AI rebuilds the app.</div>
+        </div>
       </div>
     </section>
   </main>
 
   <footer id="timeline">
-    <div class="timeline-label" id="timeline-cursor">LIVE</div>
-    <div class="timeline-track" id="timeline-track"></div>
-    <div class="timeline-hint">Timeline scrubber — Phase 2</div>
+    <div class="timeline-inner">
+      <div class="timeline-label" id="timeline-cursor">● LIVE</div>
+      <div class="timeline-track" id="timeline-track"></div>
+      <div class="timeline-stats" id="timeline-stats"></div>
+    </div>
   </footer>
+
+  <!-- Toast host — bottom-right for ephemeral IDE launch feedback -->
+  <div id="toast-host"></div>
 
   <script type="module" src="/studio.js"></script>
 </body>
