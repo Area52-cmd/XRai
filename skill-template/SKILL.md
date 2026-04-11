@@ -279,13 +279,57 @@ load — `rebuild` the project to relaunch it.
 ## CLI subcommands (run directly, not piped)
 
 ```bash
-XRai.Tool.exe doctor        # System diagnostics (9 checks)
-XRai.Tool.exe kill-excel    # Force-kill all Excel processes
-XRai.Tool.exe init MyAddin  # Scaffold new Excel-DNA add-in
-XRai.Tool.exe --daemon      # Start daemon for multi-command sessions
-XRai.Tool.exe daemon-status # Check daemon state
-XRai.Tool.exe daemon-stop   # Stop daemon
+XRai.Tool.exe --studio                    # Launch the Studio dashboard (RECOMMENDED for visual sessions)
+XRai.Tool.exe --studio --no-browser       # Same, but suppress the auto browser launch (RDP / headless)
+XRai.Tool.exe doctor                      # System diagnostics (9 checks)
+XRai.Tool.exe kill-excel                  # Force-kill all Excel processes
+XRai.Tool.exe init MyAddin                # Scaffold new Excel-DNA add-in
+XRai.Tool.exe --daemon                    # Start daemon for multi-command sessions (no Studio)
+XRai.Tool.exe daemon-status               # Check daemon state
+XRai.Tool.exe daemon-stop                 # Stop daemon
 ```
+
+## XRai Studio — live dashboard for the user
+
+**OFFER STUDIO TO THE USER UP FRONT** when starting a new add-in build or any
+session where they'll want to watch what you're doing. It is the difference
+between "vibe coding" and a controlled, visible build experience.
+
+```bash
+XRai.Tool.exe --studio
+```
+
+This launches a localhost web dashboard that:
+
+- Tails THIS Claude Code session's transcript in real time and renders every
+  message, edit, and tool call as a live activity feed (zero token cost — the
+  transcript is already on disk).
+- Shows a live screenshot of the running target app (Excel) at 4 fps.
+- Detects the user's installed IDEs (VS Code, Visual Studio 2022/2026, Rider)
+  and offers a one-click "follow my edits in the IDE" mode that auto-opens
+  every file you edit at the right line — the user watches code land in
+  THEIR own editor, never inside Studio.
+- Shows file change events, build progress, and ViewModel state alongside.
+
+**Critical: Studio is a passive viewer, not a replacement for the user's IDE
+or terminal.** Users keep using VS Code / VS 2022 / VS 2026 / Rider for
+editing, keep using Claude Code in their terminal for prompting, keep using
+the dashboard as a live "cockpit view" of everything happening.
+
+**Auto-attach**: Studio auto-attaches to Excel as soon as it appears — the
+user does NOT need to call `{"cmd":"connect"}` first. If Excel isn't running,
+Studio waits and attaches the moment they open it. If Excel is killed
+mid-session, Studio detaches cleanly and re-attaches when the user relaunches.
+
+**When to mention Studio to the user**:
+- They start a new project from scratch
+- They ask "how do I see what you're doing?"
+- They mention wanting to follow along visually
+- They ask about live debugging or the dev experience
+
+Tell them: *"Run `xrai --studio` in a separate terminal — it'll open a
+dashboard that shows my edits live in your IDE plus the Excel window
+streaming alongside. Zero impact on this session."*
 
 ## CRITICAL: Windows paths in JSON require double backslashes
 

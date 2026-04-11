@@ -360,8 +360,25 @@ public class DaemonServer
             });
 
         var url = _studioHost.Start(launchBrowser: StudioLaunchBrowser);
-        Console.WriteLine($"[xrai-daemon] Studio ready: {url}");
-        DaemonLog($"Studio started at {url}");
+
+        // Display the URL banner prominently so RDP / headless / locked-down
+        // users can copy-paste it into a browser even if the auto-launch
+        // failed silently. ASCII-only so it renders in any codepage —
+        // box-drawing characters render as garbage in cmd.exe's default CP437.
+        Console.WriteLine();
+        Console.WriteLine("==================================================================");
+        Console.WriteLine("  XRai Studio is ready");
+        Console.WriteLine("------------------------------------------------------------------");
+        Console.WriteLine($"  {url}");
+        Console.WriteLine();
+        Console.WriteLine("  Open this URL in your browser to watch your code come alive.");
+        Console.WriteLine("  The token in the URL is one-time and tied to this daemon.");
+        Console.WriteLine("==================================================================");
+        Console.WriteLine();
+
+        // Log only the port — never write the token to disk. Anyone with
+        // file access could otherwise grab the URL and authenticate.
+        DaemonLog($"Studio started on http://127.0.0.1:{_studioHost.Port}/ (token redacted)");
 
         // ── Source: add-in pipe events ──────────────────────────────
         // Wire the add-in's in-process events (via hooks pipe) to the bus.
@@ -445,6 +462,140 @@ public class DaemonServer
                 if (detail != null) data["detail"] = detail;
                 _studioHost.Bus.Publish(XRai.Studio.StudioEvent.Now("rebuild.step", "daemon", data));
             });
+
+        // ── Auto-attach watchdog ────────────────────────────────────
+        // Background loop that polls every 2s for an Excel process and
+        // attaches to it the moment one appears. Survives Excel kills/
+        // relaunches: when the current attachment dies, the watchdog
+        // re-attaches automatically. This is the difference between a
+        // "demo" (user has to type {"cmd":"connect"}) and a shippable
+        // product (user just opens Excel and Studio's screenshot panel
+        // springs to life).
+        StartAutoAttachWatchdog();
+    }
+
+    private CancellationTokenSource? _autoAttachCts;
+
+    private void StartAutoAttachWatchdog()
+    {
+        _autoAttachCts = new CancellationTokenSource();
+        var cts = _autoAttachCts;
+        int consecutiveFailures = 0;
+
+        var thread = new Thread(() =>
+        {
+            DaemonLog("Auto-attach watchdog started");
+            while (!cts.IsCancellationRequested && _running)
+            {
+                try
+                {
+                    // Quick non-COM check first to avoid queueing STA work every tick
+                    bool isAttached = _session.IsAttached;
+
+                    if (isAttached)
+                    {
+                        // Health probe and Detach BOTH go through the STA worker.
+                        // _session.App is a COM RCW that was activated on the
+                        // STA thread; releasing it from a background thread
+                        // can throw RPC_E_WRONG_THREAD or leak the RCW.
+                        bool dead = false;
+                        try
+                        {
+                            _staWorker.Invoke(() =>
+                            {
+                                var _h = _session.App.Hwnd; // throws if RCW dead
+                                return "ok";
+                            }, 1500);
+                        }
+                        catch
+                        {
+                            dead = true;
+                        }
+
+                        if (dead)
+                        {
+                            DaemonLog("Auto-attach: existing session is dead, detaching");
+                            try { _staWorker.Invoke(() => { _session.Detach(); return "ok"; }, 2000); }
+                            catch (Exception ex) { DaemonLog($"Auto-attach detach failed: {ex.Message}"); }
+                            try { _hookConnection.Disconnect(); } catch { }
+
+                            try
+                            {
+                                _studioHost?.Bus.Publish(XRai.Studio.StudioEvent.Now(
+                                    "target.detached", "daemon", new System.Text.Json.Nodes.JsonObject
+                                    {
+                                        ["reason"] = "process gone",
+                                    }));
+                            }
+                            catch { }
+                            isAttached = false;
+                        }
+                    }
+
+                    if (!isAttached)
+                    {
+                        var procs = System.Diagnostics.Process.GetProcessesByName("EXCEL");
+                        try
+                        {
+                            if (procs.Length > 0)
+                            {
+                                int targetPid = procs[0].Id;
+                                try
+                                {
+                                    // Attach must run on the STA thread so the RCW
+                                    // is owned by the apartment that uses it later.
+                                    _staWorker.Invoke(() => { _session.Attach(); return "ok"; }, 5000);
+                                    if (_session.IsAttached)
+                                    {
+                                        DaemonLog($"Auto-attach: bound to Excel pid={targetPid}");
+                                        consecutiveFailures = 0;
+                                        try { TryConnectHooks(); } catch { }
+                                        try
+                                        {
+                                            _studioHost?.Bus.Publish(XRai.Studio.StudioEvent.Now(
+                                                "target.attached", "daemon", new System.Text.Json.Nodes.JsonObject
+                                                {
+                                                    ["pid"] = targetPid,
+                                                    ["name"] = "Microsoft Excel",
+                                                }));
+                                        }
+                                        catch { }
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    // Excel is loading or COM is busy. Don't spam
+                                    // the log on every retry — emit only every
+                                    // 10th failure (~20s of failed retries).
+                                    consecutiveFailures++;
+                                    if (consecutiveFailures % 10 == 1)
+                                    {
+                                        DaemonLog($"Auto-attach: pid={targetPid} not yet ready ({ex.Message})");
+                                    }
+                                }
+                            }
+                        }
+                        finally
+                        {
+                            foreach (var p in procs) { try { p.Dispose(); } catch { } }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    DaemonLog($"Auto-attach watchdog iteration error: {ex.Message}");
+                }
+
+                try { Thread.Sleep(2000); }
+                catch { break; }
+            }
+            DaemonLog("Auto-attach watchdog stopped");
+        })
+        {
+            IsBackground = true,
+            Name = "xrai-studio-autoattach",
+        };
+        thread.Start();
     }
 
     /// <summary>
@@ -467,19 +618,40 @@ public class DaemonServer
 
         if (_session.IsAttached)
         {
+            // ProbeWorkbookState touches the Application RCW; route through the
+            // STA worker like every other COM access. Without this, a Kestrel
+            // request thread could touch the RCW concurrently with the STA
+            // thread executing a router command. Short timeout — if the STA
+            // is busy, the dashboard sees no target info this tick (the
+            // periodic /state poll picks it up next time).
             try
             {
-                var wbState = _session.ProbeWorkbookState();
+                bool hasWorkbook = false;
+                string? wbName = null;
+                int wbCount = 0;
+                _staWorker.Invoke(() =>
+                {
+                    var state = _session.ProbeWorkbookState();
+                    hasWorkbook = state.HasWorkbook;
+                    wbName = state.Name;
+                    wbCount = state.Count;
+                    return "ok";
+                }, 1000);
+
                 obj["target"] = new System.Text.Json.Nodes.JsonObject
                 {
-                    ["kind"] = "excel",           // future: "word", "sap", "autocad", etc.
+                    ["kind"] = "excel",
                     ["name"] = "Microsoft Excel",
-                    ["document"] = wbState.Name,  // generic document / project / workbook name
-                    ["hasDocument"] = wbState.HasWorkbook,
-                    ["documentCount"] = wbState.Count,
+                    ["document"] = wbName,
+                    ["hasDocument"] = hasWorkbook,
+                    ["documentCount"] = wbCount,
                 };
             }
-            catch { }
+            catch
+            {
+                // STA busy or attached state changed mid-call — leave target
+                // out of this snapshot rather than risking a race.
+            }
         }
 
         return obj;
@@ -490,6 +662,11 @@ public class DaemonServer
         Console.WriteLine("[xrai-daemon] Stop requested.");
         _running = false;
         _cts.Cancel();
+
+        // Stop the auto-attach watchdog so it exits cleanly.
+        try { _autoAttachCts?.Cancel(); } catch { }
+        try { _autoAttachCts?.Dispose(); } catch { }
+        _autoAttachCts = null;
 
         // Stop the Studio host first so the token file is cleared and the
         // Kestrel server shuts down cleanly before the process exits.
@@ -686,6 +863,13 @@ public class DaemonServer
 
         _router.Register("status", _ =>
         {
+            var studioInfo = _studioHost != null ? new
+            {
+                running = true,
+                url = _studioHost.Url,
+                port = _studioHost.Port,
+            } : null;
+
             if (!_session.IsAttached)
             {
                 return Response.Ok(new
@@ -694,6 +878,7 @@ public class DaemonServer
                     daemon = true,
                     daemon_pipe = PipeName,
                     log_path = LogPath,
+                    studio = studioInfo,
                     hint = "Daemon is running but no COM session. Call {\"cmd\":\"connect\"} to attach."
                 });
             }
@@ -711,6 +896,7 @@ public class DaemonServer
                 daemon_pipe = PipeName,
                 log_path = LogPath,
                 filter_registered = _staWorker.FilterRegistered,
+                studio = studioInfo,
             });
         });
 

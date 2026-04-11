@@ -36,10 +36,11 @@ public sealed class StudioPreferences
 
     public static StudioPreferences Load()
     {
+        var path = PreferencesPath;
+        if (!File.Exists(path)) return new StudioPreferences();
+
         try
         {
-            var path = PreferencesPath;
-            if (!File.Exists(path)) return new StudioPreferences();
             var text = File.ReadAllText(path);
             var prefs = JsonSerializer.Deserialize<StudioPreferences>(text, new JsonSerializerOptions
             {
@@ -47,8 +48,14 @@ public sealed class StudioPreferences
             });
             return prefs ?? new StudioPreferences();
         }
-        catch
+        catch (Exception ex)
         {
+            // Corrupt file — log to Debug (which goes to the daemon's
+            // attached debugger / DebugView) and return defaults so the
+            // user isn't stuck in a broken state. The next Save will
+            // overwrite the corrupt file with valid JSON.
+            System.Diagnostics.Debug.WriteLine(
+                $"StudioPreferences.Load: corrupt file at {path} ({ex.GetType().Name}: {ex.Message}). Resetting to defaults.");
             return new StudioPreferences();
         }
     }

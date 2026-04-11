@@ -36,9 +36,36 @@ Open Claude Code (or any AI agent with XRai configured) in your Excel-DNA projec
 
 Claude scaffolds the project, builds it, launches Excel, connects hooks, interacts with the pane, takes screenshots, and verifies everything works -- all autonomously.
 
+### Watch it happen live with XRai Studio
+
+Run this in any terminal:
+
+```powershell
+xrai --studio
+```
+
+A browser tab opens to a localhost dashboard showing:
+
+- **A friendly onboarding overlay** that detects your installed IDEs (VS Code, Visual Studio 2022/2026, JetBrains Rider) and asks which one you want to follow your code in.
+- **Live agent activity feed** -- every message Claude sends, every file edit, every tool call streams in real time as the session happens. Tails Claude Code's session transcript directly from disk -- zero token cost, zero API impact.
+- **Live screenshot of Excel** at 4 fps so you watch the add-in materialize.
+- **Auto IDE follow** -- when the agent edits a file, Studio automatically opens that file in your real IDE at the right line. You watch the code land in your own editor. Studio never replaces VS Code / VS 2026 / Rider -- it just points your editor at the right place at the right moment.
+- **Auto-attach to Excel** -- the moment you open Excel, Studio attaches and the screenshot panel comes alive. No commands required.
+- **File touched panel, build progress panel, app state panel**, all live, all in plain English.
+
+Studio is a passive viewer. It does not edit files, does not invoke any AI model, does not consume any tokens. It tails files Claude Code is already writing. If you turn Studio off, your existing workflow is 100% unchanged.
+
+For headless / RDP use:
+
+```powershell
+xrai --studio --no-browser
+```
+
+The dashboard URL is printed prominently in the terminal so you can copy-paste it into a browser.
+
 ### For existing add-ins
 
-1. Add `XRai.Hooks` to your project: `dotnet add package XRai.Hooks --version "1.0.*"`
+1. Add `XRai.Hooks` to your project: `dotnet add package XRai.Hooks --version "1.0.0-*"`
 2. Wire `Pilot.Start()` / `Pilot.Expose(pane)` / `Pilot.ExposeModel(vm)` in your `IExcelAddIn.AutoOpen()`
 3. Build, load the `.xll` in Excel, and start commanding via XRai
 

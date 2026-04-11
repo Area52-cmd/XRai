@@ -29,6 +29,14 @@ public sealed class FileWatcherSource : IDisposable
     private readonly int _debounceMs;
     private bool _disposed;
 
+    /// <summary>
+    /// Hard cap on the number of in-flight debouncer Timers. A long session
+    /// editing many distinct files would otherwise leak Timer objects + GC
+    /// handles. When the cap is hit, the oldest debouncer is force-fired
+    /// (so its event still lands) before the new one is added.
+    /// </summary>
+    private const int MaxDebouncers = 256;
+
     private static readonly string[] IncludeExtensions = new[]
     {
         ".cs", ".xaml", ".csproj", ".sln", ".json", ".md", ".ps1",
@@ -120,6 +128,25 @@ public sealed class FileWatcherSource : IDisposable
             if (Directory.Exists(e.FullPath)) return;
         }
         catch { return; }
+
+        // Cap the debouncer dictionary so a long session editing thousands of
+        // distinct files doesn't leak Timer objects. When over the cap, force-
+        // fire the oldest pending debouncer (so its event still gets emitted)
+        // before adding the new one. Cheap O(N) sweep on overflow only.
+        if (_debouncers.Count >= MaxDebouncers && !_debouncers.ContainsKey(e.FullPath))
+        {
+            try
+            {
+                var victim = _debouncers.Keys.FirstOrDefault();
+                if (victim != null && _debouncers.TryRemove(victim, out var oldTimer))
+                {
+                    try { oldTimer.Dispose(); } catch { }
+                    // Force-fire so the user still sees the event
+                    FireDebounced(victim);
+                }
+            }
+            catch { }
+        }
 
         // Debounce: reset the timer for this path
         _debouncers.AddOrUpdate(

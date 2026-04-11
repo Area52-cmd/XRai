@@ -74,6 +74,11 @@ public sealed class ClaudeCodeAgentAdapter : IAgentAdapter
         _thread.Start();
     }
 
+    // Throttle adapter error events so a permanently-broken transcript
+    // doesn't flood the bus with one error every 200ms.
+    private long _lastErrorEmitTicks;
+    private int _consecutiveErrors;
+
     private void Loop()
     {
         while (!_disposed && !_cts.IsCancellationRequested)
@@ -102,14 +107,44 @@ public sealed class ClaudeCodeAgentAdapter : IAgentAdapter
                 }
 
                 TailOnce(file);
+                _consecutiveErrors = 0;
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"ClaudeCode tail loop error: {ex.Message}");
+                ReportAdapterError("loop", ex);
             }
 
             try { Thread.Sleep(PollIntervalMs); }
             catch { break; }
+        }
+    }
+
+    /// <summary>
+    /// Surface adapter errors as bus events so the dashboard can show
+    /// "agent feed broken" instead of going silently dark. Throttled to
+    /// once every 5 seconds so a stuck loop doesn't flood the bus.
+    /// </summary>
+    private void ReportAdapterError(string phase, Exception ex)
+    {
+        _consecutiveErrors++;
+        var now = Environment.TickCount64;
+        if (now - _lastErrorEmitTicks < 5000) return;
+        _lastErrorEmitTicks = now;
+
+        try
+        {
+            _bus.Publish(StudioEvent.Now("agent.adapter.error", "agent", new JsonObject
+            {
+                ["agent"] = AgentName,
+                ["phase"] = phase,
+                ["message"] = ex.Message,
+                ["exceptionType"] = ex.GetType().Name,
+                ["consecutiveErrors"] = _consecutiveErrors,
+            }));
+        }
+        catch (Exception emitEx)
+        {
+            Debug.WriteLine($"ClaudeCode tail: failed to emit adapter error event: {emitEx.Message}");
         }
     }
 
@@ -136,11 +171,11 @@ public sealed class ClaudeCodeAgentAdapter : IAgentAdapter
         }
         catch (IOException)
         {
-            // File locked by Claude Code mid-write — try again next tick
+            // File locked by Claude Code mid-write — benign, try again next tick.
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"ClaudeCode tail read error: {ex.Message}");
+            ReportAdapterError("read", ex);
         }
     }
 
@@ -203,7 +238,7 @@ public sealed class ClaudeCodeAgentAdapter : IAgentAdapter
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"ClaudeCode tail publish error: {ex.Message}");
+            ReportAdapterError("parse", ex);
         }
     }
 

@@ -61,13 +61,92 @@ public static class IdeLauncher
         };
     }
 
+    // ── Detection cache ─────────────────────────────────────────
+
+    // Install paths basically never change during a daemon session — caching
+    // them for 30 seconds eliminates the 4+ shell-outs per Open call. The
+    // Running flag is volatile (the user might launch / close their IDE
+    // mid-session) so it's recomputed on a tighter 3-second TTL.
+    private static readonly object _cacheLock = new();
+    private static List<IdeInfo>? _cachedDetect;
+    private static long _cacheStampMs;
+    private const int InstallCacheTtlMs = 30_000;
+    private const int RunningCacheTtlMs = 3_000;
+
+    /// <summary>
+    /// Reset the detection cache. Called by tests and after `studio` setup
+    /// flows that install a new IDE.
+    /// </summary>
+    public static void InvalidateCache()
+    {
+        lock (_cacheLock)
+        {
+            _cachedDetect = null;
+            _cacheStampMs = 0;
+        }
+    }
+
     // ── Public API ──────────────────────────────────────────────
 
     /// <summary>
     /// Return a list of all supported IDEs with their install / running status.
     /// Used by the dashboard startup overlay to offer the user a choice.
+    /// Cached for 30 seconds (install paths) with a 3-second refresh on the
+    /// Running flag, so repeat calls in a hot-path don't shell out.
     /// </summary>
     public static List<IdeInfo> DetectAll()
+    {
+        var nowMs = Environment.TickCount64;
+
+        lock (_cacheLock)
+        {
+            if (_cachedDetect != null)
+            {
+                var ageMs = nowMs - _cacheStampMs;
+                if (ageMs < InstallCacheTtlMs)
+                {
+                    if (ageMs < RunningCacheTtlMs)
+                    {
+                        // Fresh — return as-is
+                        return _cachedDetect;
+                    }
+                    // Install paths still fresh, but refresh Running flag.
+                    var runningSet = GetRunningIdes();
+                    foreach (var i in _cachedDetect)
+                    {
+                        var refreshed = new IdeInfo
+                        {
+                            Kind = i.Kind,
+                            DisplayName = i.DisplayName,
+                            Installed = i.Installed,
+                            Running = runningSet.Contains(i.Kind),
+                            ExecutablePath = i.ExecutablePath,
+                            Version = i.Version,
+                            InstallUrl = i.InstallUrl,
+                            InstallTagline = i.InstallTagline,
+                        };
+                        // Mutate the cached entry in place via re-ref —
+                        // simpler than rebuilding the whole list.
+                        var idx = _cachedDetect.IndexOf(i);
+                        _cachedDetect[idx] = refreshed;
+                    }
+                    _cacheStampMs = nowMs - InstallCacheTtlMs + RunningCacheTtlMs; // partial-refresh stamp
+                    return _cachedDetect;
+                }
+            }
+        }
+
+        // Cold path — full detection
+        var fresh = DetectAllUncached();
+        lock (_cacheLock)
+        {
+            _cachedDetect = fresh;
+            _cacheStampMs = nowMs;
+        }
+        return fresh;
+    }
+
+    private static List<IdeInfo> DetectAllUncached()
     {
         var runningSet = GetRunningIdes();
         var list = new List<IdeInfo>();

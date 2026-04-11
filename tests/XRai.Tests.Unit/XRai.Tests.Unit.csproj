@@ -21,6 +21,7 @@
     <ProjectReference Include="..\..\src\XRai.Core\XRai.Core.csproj" />
     <ProjectReference Include="..\..\src\XRai.Com\XRai.Com.csproj" />
     <ProjectReference Include="..\..\src\XRai.HooksClient\XRai.HooksClient.csproj" />
+    <ProjectReference Include="..\..\src\XRai.Studio\XRai.Studio.csproj" />
   </ItemGroup>
 
 </Project>

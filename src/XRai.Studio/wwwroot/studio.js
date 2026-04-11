@@ -447,23 +447,65 @@ function onAgentToolUse(data) {
   }
 
   // Auto-follow: if follow-mode is on AND this is an edit/write, open the
-  // file in the user's IDE right now. De-dupe rapid duplicate edits (<500ms
-  // apart on the same path) so we don't spam the IDE.
+  // file in the user's IDE — but rate-limited so a burst of 50 edits doesn't
+  // spam the IDE with 50 launches. Two layers of throttling:
+  //   1. Per-file: max once per 500ms on the same path (de-dupe)
+  //   2. Global: max one IDE launch per 1000ms across all paths
+  // The second layer means a 50-edit burst opens at most one file per second,
+  // and we drop the older queued edits in favor of the newest one.
   if (state.preferences?.followMode && detail.filePath) {
     const n = (toolName || "").toLowerCase();
     if (n === "edit" || n === "write" || n === "notebookedit") {
       const now = Date.now();
-      const last = state.recentFileEdits.get(detail.filePath) || 0;
-      if (now - last > 500) {
+      const lastForFile = state.recentFileEdits.get(detail.filePath) || 0;
+      if (now - lastForFile > 500) {
         state.recentFileEdits.set(detail.filePath, now);
-        openFileInIde(detail.filePath, detail.line).then(r => {
-          if (r?.ok) {
-            toast(`Opened ${shortPath(detail.filePath)} in ${r.name || r.ide || "IDE"}`, "ok", 1800);
-          }
-        });
+        scheduleIdeOpen(detail.filePath, detail.line);
       }
     }
   }
+}
+
+// ── Global IDE launch throttle ─────────────────────────────────
+// Schedules an IDE open with a 1-second global rate limit. If multiple
+// edits arrive within the throttle window, only the most recent one is
+// opened — older queued targets are silently dropped because the user
+// almost always wants to see the LATEST edit, not the first one.
+let lastIdeLaunchAt = 0;
+let pendingIdeOpen = null;
+let pendingIdeTimer = null;
+const IDE_THROTTLE_MS = 1000;
+
+function scheduleIdeOpen(filePath, line) {
+  const now = Date.now();
+  const timeSince = now - lastIdeLaunchAt;
+
+  // Replace any pending open with the latest target
+  pendingIdeOpen = { filePath, line };
+
+  if (timeSince >= IDE_THROTTLE_MS) {
+    // Throttle window has passed — open immediately
+    flushPendingIdeOpen();
+  } else if (!pendingIdeTimer) {
+    // Schedule a flush at the end of the throttle window
+    pendingIdeTimer = setTimeout(() => {
+      pendingIdeTimer = null;
+      flushPendingIdeOpen();
+    }, IDE_THROTTLE_MS - timeSince);
+  }
+}
+
+function flushPendingIdeOpen() {
+  if (!pendingIdeOpen) return;
+  const target = pendingIdeOpen;
+  pendingIdeOpen = null;
+  lastIdeLaunchAt = Date.now();
+
+  openFileInIde(target.filePath, target.line).then(r => {
+    if (r?.ok) {
+      toast(`Opened ${shortPath(target.filePath)} in ${r.name || r.ide || "IDE"}`, "ok", 1800);
+    }
+  });
 }
 
 function classifyTool(name) {

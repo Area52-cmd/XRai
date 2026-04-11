@@ -44,11 +44,11 @@ class Program
                 case "--studio" or "studio":
                     // Run as daemon with the Studio web dashboard enabled.
                     // Browser launches automatically by default. Pass
-                    // --no-browser to suppress (used by smoke tests).
+                    // --no-browser to suppress (used by smoke tests / RDP).
                     return new DaemonServer
                     {
                         StudioEnabled = true,
-                        StudioLaunchBrowser = !args.Contains("--no-browser") && !args.Contains("--studio-no-browser"),
+                        StudioLaunchBrowser = !args.Contains("--no-browser"),
                     }.Run();
                 case "daemon-status":
                     return DaemonStatus();
@@ -725,6 +725,12 @@ class Program
         Console.WriteLine("  echo '<json-command>' | XRai.Tool.exe [flags]");
         Console.WriteLine();
         Console.WriteLine("CLI SUBCOMMANDS:");
+        Console.WriteLine("  studio             Launch XRai Studio — live dashboard that watches your AI");
+        Console.WriteLine("                     coding agent and your target app side-by-side.");
+        Console.WriteLine("                     Equivalent to --studio. Auto-opens your browser.");
+        Console.WriteLine("  daemon             Run as the long-lived XRai daemon (no Studio dashboard)");
+        Console.WriteLine("  daemon-status      Check whether the daemon is running");
+        Console.WriteLine("  daemon-stop        Stop a running daemon");
         Console.WriteLine("  doctor             Run system diagnostics (9 checks)");
         Console.WriteLine("  init <name>        Scaffold a new XRai-enabled Excel-DNA add-in project");
         Console.WriteLine("  kill-excel         Force-kill all Excel processes (zombie cleanup)");
@@ -732,10 +738,19 @@ class Program
         Console.WriteLine("  help               Show this message");
         Console.WriteLine();
         Console.WriteLine("CLI FLAGS:");
+        Console.WriteLine("  --studio           Run the daemon WITH the Studio dashboard enabled");
+        Console.WriteLine("  --no-browser       Suppress the auto browser launch (for headless / RDP use)");
         Console.WriteLine("  --pid <n>          Attach to a specific Excel PID on startup");
         Console.WriteLine("  --wait             Wait for Excel to appear, then attach, then enter REPL");
         Console.WriteLine("  --repl             Persistent REPL mode (stdin-driven, stays attached)");
         Console.WriteLine("  --timeout <ms>     Default timeout per command (default: 15000)");
+        Console.WriteLine();
+        Console.WriteLine("STUDIO QUICK START:");
+        Console.WriteLine("  XRai.Tool.exe --studio");
+        Console.WriteLine("    → starts the daemon, launches the Studio web dashboard, opens your browser.");
+        Console.WriteLine("    → pick your IDE in the onboarding overlay, then watch your AI agent edit");
+        Console.WriteLine("      code live as Excel updates alongside.");
+        Console.WriteLine("    → zero impact on the agent — Studio passively reads transcript files.");
         Console.WriteLine();
         Console.WriteLine("JSON PROTOCOL:");
         Console.WriteLine("  Every stdin line must be one JSON object: {\"cmd\":\"...\",\"arg\":...}");

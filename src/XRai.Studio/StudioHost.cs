@@ -213,7 +213,8 @@ public sealed class StudioHost : IDisposable
                 catch (Exception ex)
                 {
                     ctx.Response.StatusCode = 400;
-                    await ctx.Response.WriteAsync($"{{\"ok\":false,\"error\":\"{ex.Message}\"}}");
+                    ctx.Response.ContentType = "application/json";
+                    await ctx.Response.WriteAsync(Response.ErrorFromException(ex, "studio.preferences.save"));
                 }
                 return;
             }
@@ -238,11 +239,17 @@ public sealed class StudioHost : IDisposable
                     System.Text.Json.Nodes.JsonObject result;
                     if (string.IsNullOrEmpty(filePath))
                     {
-                        // No file path means "launch the IDE itself"
                         if (kind.HasValue)
+                        {
                             result = IdeLauncher.LaunchBlank(kind.Value);
+                        }
                         else
-                            result = new System.Text.Json.Nodes.JsonObject { ["ok"] = false, ["error"] = "filePath or kind is required" };
+                        {
+                            ctx.Response.StatusCode = 400;
+                            ctx.Response.ContentType = "application/json";
+                            await ctx.Response.WriteAsync(Response.Error("filePath or kind is required", code: ErrorCodes.MissingArgument));
+                            return;
+                        }
                     }
                     else
                     {
@@ -255,7 +262,8 @@ public sealed class StudioHost : IDisposable
                 catch (Exception ex)
                 {
                     ctx.Response.StatusCode = 500;
-                    await ctx.Response.WriteAsync($"{{\"ok\":false,\"error\":\"{ex.Message}\"}}");
+                    ctx.Response.ContentType = "application/json";
+                    await ctx.Response.WriteAsync(Response.ErrorFromException(ex, "studio.ide.open"));
                 }
                 return;
             }
@@ -316,10 +324,14 @@ public sealed class StudioHost : IDisposable
 
     private async Task HandleCommand(HttpContext ctx)
     {
+        ctx.Response.ContentType = "application/json";
+
         if (_commandDispatcher == null)
         {
             ctx.Response.StatusCode = 501;
-            await ctx.Response.WriteAsync("{\"ok\":false,\"error\":\"/command is disabled on this Studio instance\"}");
+            await ctx.Response.WriteAsync(Response.Error(
+                "/command is disabled on this Studio instance",
+                code: ErrorCodes.NotImplemented));
             return;
         }
 
@@ -327,10 +339,10 @@ public sealed class StudioHost : IDisposable
         var body = await reader.ReadToEndAsync();
         JsonObject? parsed;
         try { parsed = JsonNode.Parse(body) as JsonObject; }
-        catch
+        catch (Exception parseEx)
         {
             ctx.Response.StatusCode = 400;
-            await ctx.Response.WriteAsync("{\"ok\":false,\"error\":\"Body must be a JSON object\"}");
+            await ctx.Response.WriteAsync(Response.ErrorFromException(parseEx, "studio.command.parse"));
             return;
         }
 
@@ -338,20 +350,19 @@ public sealed class StudioHost : IDisposable
         if (string.IsNullOrEmpty(cmd))
         {
             ctx.Response.StatusCode = 400;
-            await ctx.Response.WriteAsync("{\"ok\":false,\"error\":\"Missing 'cmd' field\"}");
+            await ctx.Response.WriteAsync(Response.Error("Missing 'cmd' field", code: ErrorCodes.MissingArgument));
             return;
         }
 
         try
         {
             var result = _commandDispatcher(cmd, parsed!);
-            ctx.Response.ContentType = "application/json";
             await ctx.Response.WriteAsync(result);
         }
         catch (Exception ex)
         {
             ctx.Response.StatusCode = 500;
-            await ctx.Response.WriteAsync($"{{\"ok\":false,\"error\":\"{JsonEncodedText.Encode(ex.Message)}\"}}");
+            await ctx.Response.WriteAsync(Response.ErrorFromException(ex, $"studio.command.{cmd}"));
         }
     }
 
