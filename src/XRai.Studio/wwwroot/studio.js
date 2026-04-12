@@ -573,17 +573,24 @@ async function launchIde(kind) {
   }
 }
 
-async function openFileInIde(filePath, line) {
+async function openFileInIde(filePath, line, searchText) {
   if (!filePath) return;
   try {
+    const body = {
+      filePath,
+      line: line || null,
+      kind: state.preferences?.preferredIde || null,
+    };
+    // Pass searchText so the server can find the exact line even when
+    // the transcript doesn't include a line number. For Edit tool calls
+    // this is the old_string (the text being replaced); the server reads
+    // the file and finds which line it starts on.
+    if (searchText) body.searchText = searchText;
+
     const res = await fetch("/ide/open", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        filePath,
-        line: line || null,
-        kind: state.preferences?.preferredIde || null,
-      }),
+      body: JSON.stringify(body),
     });
     const result = await res.json();
     if (!result.ok) {
@@ -774,11 +781,12 @@ function onAgentToolUse(data) {
   currentAssistantItem = null;
   currentAssistantUuid = null;
 
-  // Click → open file in IDE
+  // Click → open file in IDE at the exact edit location
   const clickable = item.querySelector(".tool-detail.clickable");
   if (clickable && detail.filePath) {
     clickable.addEventListener("click", () => {
-      openFileInIde(detail.filePath, detail.line);
+      // Pass oldString as searchText so the server finds the exact line
+      openFileInIde(detail.filePath, detail.line, detail.oldString || detail.newString);
     });
   }
 
@@ -801,7 +809,7 @@ function onAgentToolUse(data) {
       const lastForFile = state.recentFileEdits.get(detail.filePath) || 0;
       if (now - lastForFile > 500) {
         state.recentFileEdits.set(detail.filePath, now);
-        scheduleIdeOpen(detail.filePath, detail.line);
+        scheduleIdeOpen(detail.filePath, detail.line, detail.oldString || detail.newString);
       }
     }
   }
@@ -817,12 +825,12 @@ let pendingIdeOpen = null;
 let pendingIdeTimer = null;
 const IDE_THROTTLE_MS = 1000;
 
-function scheduleIdeOpen(filePath, line) {
+function scheduleIdeOpen(filePath, line, searchText) {
   const now = Date.now();
   const timeSince = now - lastIdeLaunchAt;
 
   // Replace any pending open with the latest target
-  pendingIdeOpen = { filePath, line };
+  pendingIdeOpen = { filePath, line, searchText };
 
   if (timeSince >= IDE_THROTTLE_MS) {
     // Throttle window has passed — open immediately
@@ -842,9 +850,10 @@ function flushPendingIdeOpen() {
   pendingIdeOpen = null;
   lastIdeLaunchAt = Date.now();
 
-  openFileInIde(target.filePath, target.line).then(r => {
+  openFileInIde(target.filePath, target.line, target.searchText).then(r => {
     if (r?.ok) {
-      toast(`Opened ${shortPath(target.filePath)} in ${r.name || r.ide || "IDE"}`, "ok", 1800);
+      const lineInfo = r.line ? ` at line ${r.line}` : "";
+      toast(`Opened ${shortPath(target.filePath)}${lineInfo} in ${r.name || r.ide || "IDE"}`, "ok", 2500);
     }
   });
 }

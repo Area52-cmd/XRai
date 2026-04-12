@@ -255,6 +255,41 @@ public sealed class StudioHost : IDisposable
                     var filePath = node?["filePath"]?.GetValue<string>();
                     var line = node?["line"]?.GetValue<int?>();
                     var kindStr = node?["kind"]?.GetValue<string?>();
+
+                    // If no explicit line but a searchText is provided, find the
+                    // line by searching the file for the first occurrence. This is
+                    // how Studio targets the exact edit location from an Edit tool
+                    // call — the old_string is passed as searchText.
+                    var searchText = node?["searchText"]?.GetValue<string?>();
+                    if (!line.HasValue && !string.IsNullOrEmpty(searchText) && !string.IsNullOrEmpty(filePath))
+                    {
+                        try
+                        {
+                            var fullPath = Path.GetFullPath(filePath);
+                            if (File.Exists(fullPath))
+                            {
+                                var content = File.ReadAllText(fullPath);
+                                var idx = content.IndexOf(searchText, StringComparison.Ordinal);
+                                if (idx < 0)
+                                {
+                                    // Exact match failed — try first line of searchText
+                                    var firstLine = searchText.Split('\n')[0].Trim();
+                                    if (firstLine.Length > 10)
+                                        idx = content.IndexOf(firstLine, StringComparison.Ordinal);
+                                }
+                                if (idx >= 0)
+                                {
+                                    // Count newlines up to the match position
+                                    line = 1;
+                                    for (int ci = 0; ci < idx; ci++)
+                                    {
+                                        if (content[ci] == '\n') line++;
+                                    }
+                                }
+                            }
+                        }
+                        catch { /* search failed — open at top, still better than nothing */ }
+                    }
                     IdeLauncher.IdeKind? kind = null;
                     if (!string.IsNullOrEmpty(kindStr) &&
                         Enum.TryParse<IdeLauncher.IdeKind>(kindStr, out var parsed))
