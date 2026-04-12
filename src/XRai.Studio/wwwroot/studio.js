@@ -782,6 +782,11 @@ function onAgentToolUse(data) {
     });
   }
 
+  // Route build-related Bash commands to the Build Progress panel too
+  if ((toolName || "").toLowerCase() === "bash" && data?.command) {
+    onAgentBuildCommand({ ...data, toolUseId });
+  }
+
   // Auto-follow: if follow-mode is on AND this is an edit/write, open the
   // file in the user's IDE — but rate-limited so a burst of 50 edits doesn't
   // spam the IDE with 50 launches. Two layers of throttling:
@@ -966,6 +971,9 @@ function onAgentToolResult(data) {
   if (toolUseId) {
     const existing = document.querySelector(`.agent-item.tool[data-tool-use-id="${CSS.escape(toolUseId)}"]`);
     if (existing && isError) existing.classList.add("err");
+
+    // Update Build Progress entry if this was a build command
+    onAgentBuildResult({ ...data, toolUseId });
   }
 
   if (!isError) return;
@@ -1126,6 +1134,63 @@ function formatValue(v) {
 
 function onPaneExposed() { /* quiet */ }
 function onControlChange() { /* quiet */ }
+
+// Detect build-related Bash commands from the agent transcript and
+// render them in Build Progress alongside native rebuild.step events.
+// This makes Build Progress work for ANY build system (dotnet, npm,
+// cargo, msbuild, etc.) — not just XRai's {"cmd":"rebuild"}.
+const BUILD_PATTERNS = [
+  /dotnet\s+(build|run|publish|restore|test|pack|clean)/i,
+  /msbuild/i,
+  /npm\s+(run\s+)?(build|start|dev|test)/i,
+  /cargo\s+(build|run|test|check)/i,
+  /make\b/i,
+  /cmake/i,
+  /xrai.*rebuild/i,
+];
+
+function isBuildCommand(cmd) {
+  if (!cmd) return false;
+  return BUILD_PATTERNS.some(p => p.test(cmd));
+}
+
+function onAgentBuildCommand(data) {
+  const cmd = data?.command;
+  if (!cmd || !isBuildCommand(cmd)) return;
+
+  $("#build-empty").classList.add("hidden");
+  const list = $("#build-list");
+
+  const shortCmd = cmd.length > 80 ? cmd.slice(0, 77) + "…" : cmd;
+  const li = document.createElement("li");
+  li.className = "start";
+  li.innerHTML = `
+    <span class="ts">${shortTime(Date.now())}</span>
+    <span class="name">$ ${escapeHtml(shortCmd)}</span>
+    <span class="meta">running…</span>
+  `;
+  list.insertBefore(li, list.firstChild);
+
+  // Store reference so the tool_result can update the status
+  const toolUseId = data?.toolUseId;
+  if (toolUseId) state.buildSteps.set(`bash-${toolUseId}`, li);
+
+  while (list.children.length > 30) list.removeChild(list.lastChild);
+}
+
+// When a build-related Bash command completes, update its Build
+// Progress entry from "running…" to "✓ done" or "✕ failed".
+function onAgentBuildResult(data) {
+  const toolUseId = data?.toolUseId;
+  if (!toolUseId) return;
+  const li = state.buildSteps.get(`bash-${toolUseId}`);
+  if (!li) return;
+
+  const isError = data?.isError === true;
+  li.className = isError ? "err" : "ok";
+  const meta = li.querySelector(".meta");
+  if (meta) meta.textContent = isError ? "✕ failed" : "✓ done";
+}
 
 function onRebuildStep(data) {
   if (!data || !data.step) return;
