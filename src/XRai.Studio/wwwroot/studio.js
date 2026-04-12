@@ -1372,7 +1372,7 @@ async function refreshDiagnostics() {
 
 // ── Toasts ──────────────────────────────────────────────────────
 
-function toast(msg, kind = "info", ttlMs = 2500) {
+function toast(msg, kind = "info", ttlMs = 5000) {
   const host = $("#toast-host");
   if (!host) return;
   const el = document.createElement("div");
