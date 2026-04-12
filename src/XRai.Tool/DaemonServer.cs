@@ -673,21 +673,35 @@ public class DaemonServer
                         }
                     }
 
+                    // ── Attach to a target app ───────────────────────
+                    // Two paths, tried in order:
+                    //   1. Excel-specific: GetActiveObject("Excel.Application")
+                    //      → full COM session + hooks pipe. The existing path.
+                    //   2. Generic: scan ALL processes for xrai_{pid} named
+                    //      pipes. ANY app that calls Pilot.Start() gets picked
+                    //      up — standalone WPF, WinForms, anything. Hooks-only
+                    //      (no COM session) but the pane/model/screenshot all
+                    //      work via the pipe + Process.MainWindowHandle.
+                    //
+                    // The Excel path is tried first because it gives us the
+                    // richer COM session. If Excel isn't running, the generic
+                    // path kicks in.
                     if (!isAttached && !_staWorker.IsStuck)
                     {
-                        var procs = System.Diagnostics.Process.GetProcessesByName("EXCEL");
+                        bool attached = false;
+
+                        // Path 1: Excel COM attach (existing behavior)
+                        var excelProcs = System.Diagnostics.Process.GetProcessesByName("EXCEL");
                         try
                         {
-                            if (procs.Length > 0)
+                            if (excelProcs.Length > 0)
                             {
-                                int targetPid = procs[0].Id;
+                                int targetPid = excelProcs[0].Id;
                                 try
                                 {
                                     _staWorker.Invoke(() => { _session.Attach(); return "ok"; }, 5000);
                                     if (_session.IsAttached)
                                     {
-                                        // Cache the hwnd ONCE so CaptureLoop never
-                                        // touches the STA worker per-frame.
                                         try
                                         {
                                             nint h = 0;
@@ -698,6 +712,7 @@ public class DaemonServer
 
                                         DaemonLog($"Auto-attach: bound to Excel pid={targetPid} hwnd=0x{_cachedExcelHwnd:X}");
                                         consecutiveFailures = 0;
+                                        attached = true;
                                         try { TryConnectHooks(); } catch { }
                                         try
                                         {
@@ -716,14 +731,84 @@ public class DaemonServer
                                     consecutiveFailures++;
                                     if (consecutiveFailures % 10 == 1)
                                     {
-                                        DaemonLog($"Auto-attach: pid={targetPid} not yet ready ({ex.Message})");
+                                        DaemonLog($"Auto-attach: Excel pid={targetPid} not yet ready ({ex.Message})");
                                     }
                                 }
                             }
                         }
                         finally
                         {
-                            foreach (var p in procs) { try { p.Dispose(); } catch { } }
+                            foreach (var p in excelProcs) { try { p.Dispose(); } catch { } }
+                        }
+
+                        // Path 2: Generic — scan for ANY process with an
+                        // xrai_{pid} named pipe. This finds standalone WPF /
+                        // WinForms apps that call Pilot.Start(). Hooks-only
+                        // (no COM session), but pane/model/screenshot all work.
+                        if (!attached && !_hookConnection.IsConnected)
+                        {
+                            try
+                            {
+                                foreach (var proc in System.Diagnostics.Process.GetProcesses())
+                                {
+                                    try
+                                    {
+                                        var pipePath = $@"\\.\pipe\xrai_{proc.Id}";
+                                        if (File.Exists(pipePath))
+                                        {
+                                            int pid = proc.Id;
+                                            string procName = proc.ProcessName;
+                                            nint mainHwnd = proc.MainWindowHandle;
+
+                                            // Skip Excel — handled by Path 1
+                                            if (string.Equals(procName, "EXCEL", StringComparison.OrdinalIgnoreCase))
+                                            {
+                                                proc.Dispose();
+                                                continue;
+                                            }
+
+                                            proc.Dispose();
+
+                                            // Connect hooks pipe directly (no COM)
+                                            try
+                                            {
+                                                _hookConnection.Connect(pid, 2000);
+                                                if (_hookConnection.IsConnected)
+                                                {
+                                                    // Cache the main window handle for CaptureLoop
+                                                    _cachedExcelHwnd = mainHwnd;
+                                                    attached = true;
+                                                    consecutiveFailures = 0;
+                                                    DaemonLog($"Auto-attach: bound to {procName} pid={pid} hwnd=0x{mainHwnd:X} (hooks-only, no COM)");
+
+                                                    try
+                                                    {
+                                                        _studioHost?.Bus.Publish(XRai.Studio.StudioEvent.Now(
+                                                            "target.attached", "daemon", new System.Text.Json.Nodes.JsonObject
+                                                            {
+                                                                ["pid"] = pid,
+                                                                ["name"] = procName,
+                                                                ["mode"] = "hooks-only",
+                                                            }));
+                                                    }
+                                                    catch { }
+                                                    break;
+                                                }
+                                            }
+                                            catch { }
+                                        }
+                                        else
+                                        {
+                                            proc.Dispose();
+                                        }
+                                    }
+                                    catch
+                                    {
+                                        try { proc.Dispose(); } catch { }
+                                    }
+                                }
+                            }
+                            catch { }
                         }
                     }
                 }
@@ -1082,6 +1167,47 @@ public class DaemonServer
             catch (Exception ex)
             {
                 return Response.ErrorFromException(ex, "studio");
+            }
+        });
+
+        // Explicit hooks-only connect for non-Excel apps. The auto-attach
+        // watchdog does this automatically, but this command lets the user
+        // (or agent) force a connection to a specific PID without waiting
+        // for the next watchdog tick.
+        _router.RegisterNoSta("hooks.connect", args =>
+        {
+            var pid = args["pid"]?.GetValue<int?>();
+            if (!pid.HasValue)
+                return Response.Error("hooks.connect requires 'pid' (process ID of the app with Pilot.Start)", code: ErrorCodes.MissingArgument);
+
+            try
+            {
+                _hookConnection.Connect(pid.Value, 3000);
+                if (_hookConnection.IsConnected)
+                {
+                    // Cache the hwnd for CaptureLoop
+                    try
+                    {
+                        using var proc = System.Diagnostics.Process.GetProcessById(pid.Value);
+                        _cachedExcelHwnd = proc.MainWindowHandle;
+                    }
+                    catch { _cachedExcelHwnd = 0; }
+
+                    return Response.Ok(new
+                    {
+                        hooks = true,
+                        pid = pid.Value,
+                        hwnd = _cachedExcelHwnd.ToInt64(),
+                        pipe = _hookConnection.PipeName,
+                        legacy_auth_fallback = _hookConnection.LegacyAuthFallback,
+                        hint = "Hooks connected. Run {\"cmd\":\"pane\"} or {\"cmd\":\"model\"} to verify the app's controls and ViewModel are exposed.",
+                    });
+                }
+                return Response.Error($"Hooks pipe xrai_{pid.Value} not responding. Is Pilot.Start() called in the target app?");
+            }
+            catch (Exception ex)
+            {
+                return Response.ErrorFromException(ex, "hooks.connect");
             }
         });
 
