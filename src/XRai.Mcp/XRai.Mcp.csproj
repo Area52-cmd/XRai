@@ -15,7 +15,7 @@
     <Version>1.0.0</Version>
     <PackageVersion>1.0.0-beta.$([System.DateTime]::UtcNow.ToString('yyyyMMddHHmm'))</PackageVersion>
     <Authors>XRai</Authors>
-    <Description>XRai MCP Server — gives AI agents structured control over Windows desktop applications. 211 commands for Excel, WPF, WinForms.</Description>
+    <Description>XRai MCP Server — structured control over Windows desktop apps for any AI agent. 288+ commands covering Excel, WPF, WinForms, task panes, ViewModels, ribbon, dialogs, screenshots, testing, desktop automation. Works with Claude Desktop, ChatGPT, VS Code Copilot, Cursor, Codex, Windsurf.</Description>
     <PackageType>McpServer</PackageType>
   </PropertyGroup>
   <ItemGroup>

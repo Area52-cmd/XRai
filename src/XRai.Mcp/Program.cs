@@ -40,6 +40,21 @@ builder.Services.AddSingleton(sp =>
     router.SetStaInvoker((func, timeout) => staWorker.Invoke(func, timeout));
     router.SetTimeoutDiagnostics(dialogDriver);
 
+    // Auto-recover the STA worker on timeout so MCP sessions don't get
+    // permanently stuck. Same pattern as the daemon.
+    router.StaAutoRecover = () =>
+    {
+        try
+        {
+            try { session.Detach(); } catch { }
+            try { hooks.Disconnect(); } catch { }
+            staWorker.Reset();
+            try { session.Attach(); } catch { }
+            return true;
+        }
+        catch { return false; }
+    };
+
     // === Connection commands (replicated from XRai.Tool Program.cs) ===
     router.Register("wait", _ =>
     {
@@ -242,6 +257,49 @@ builder.Services.AddSingleton(sp =>
         Thread.Sleep(500);
         var remaining = System.Diagnostics.Process.GetProcessesByName("EXCEL").Length;
         return Response.Ok(new { killed_pids = killed, killed_count = killed.Count, remaining });
+    });
+
+    // === STA recovery ===
+    router.Register("sta.reset", _ =>
+    {
+        bool wasStuck = staWorker.IsStuck;
+        try
+        {
+            try { session.Detach(); } catch { }
+            try { hooks.Disconnect(); } catch { }
+            staWorker.Reset();
+            return Response.Ok(new
+            {
+                reset = true,
+                was_stuck = wasStuck,
+                hint = "STA recycled. Run connect to reattach.",
+            });
+        }
+        catch (Exception ex) { return Response.ErrorFromException(ex, "sta.reset"); }
+    });
+
+    router.Register("sta.status", _ => Response.Ok(new
+    {
+        is_alive = staWorker.IsAlive,
+        is_stuck = staWorker.IsStuck,
+        filter_registered = staWorker.FilterRegistered,
+        consecutive_timeouts = staWorker.ConsecutiveTimeouts,
+    }));
+
+    // === Generic hooks connect (non-Excel apps) ===
+    router.RegisterNoSta("hooks.connect", args =>
+    {
+        var pid = args["pid"]?.GetValue<int?>();
+        if (!pid.HasValue)
+            return Response.Error("hooks.connect requires 'pid'", code: ErrorCodes.MissingArgument);
+        try
+        {
+            hooks.Connect(pid.Value, 3000);
+            return hooks.IsConnected
+                ? Response.Ok(new { hooks = true, pid = pid.Value, pipe = hooks.PipeName })
+                : Response.Error($"Hooks pipe xrai_{pid.Value} not responding");
+        }
+        catch (Exception ex) { return Response.ErrorFromException(ex, "hooks.connect"); }
     });
 
     // === Introspection commands ===
