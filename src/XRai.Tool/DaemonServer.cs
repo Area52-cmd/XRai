@@ -386,23 +386,17 @@ public class DaemonServer
         _studioHost.RegisterDisposable(pipeSource);
 
         // ── Source: live screenshot stream ──────────────────────────
+        // CRITICAL: the hwnd provider must NOT touch the STA worker on
+        // every frame tick. At 2fps that's 2 COM round-trips per second
+        // competing with the user's real Excel interactions — causing
+        // visible freezes and input lag. Instead we cache the hwnd once
+        // when the auto-attach watchdog successfully connects, and the
+        // CaptureLoop reads the cached plain nint with zero COM cost.
+        // Invalidated to 0 on detach; re-set on next attach.
         var captureLoop = new XRai.Studio.Sources.CaptureLoop(
             _studioHost.Bus,
-            () =>
-            {
-                try
-                {
-                    if (!_session.IsAttached) return (nint?)null;
-                    nint hwnd = 0;
-                    try
-                    {
-                        _staWorker.Invoke(() => { hwnd = (nint)_session.App.Hwnd; return "ok"; }, 1000);
-                    }
-                    catch { hwnd = 0; }
-                    return hwnd == 0 ? null : hwnd;
-                }
-                catch { return null; }
-            });
+            () => _cachedExcelHwnd == 0 ? null : (nint?)_cachedExcelHwnd);
+        captureLoop.ActiveIntervalMs = 500; // 2fps — plenty for a monitoring dashboard
         captureLoop.Start();
         _studioHost.RegisterDisposable(captureLoop);
 
@@ -475,6 +469,14 @@ public class DaemonServer
     }
 
     private CancellationTokenSource? _autoAttachCts;
+
+    /// <summary>
+    /// Cached Excel window handle for the CaptureLoop. Read once on successful
+    /// attach via STA, then read every frame tick WITHOUT touching the STA.
+    /// Invalidated to 0 on detach. This eliminates 2-4 COM round-trips per
+    /// second that were causing visible Excel freezes when Studio was open.
+    /// </summary>
+    private volatile nint _cachedExcelHwnd;
 
     private void StartAutoAttachWatchdog()
     {
@@ -576,6 +578,7 @@ public class DaemonServer
                             // Safe to detach: the failure was a COM exception
                             // (process gone), not an STA wedge.
                             DaemonLog("Auto-attach: existing session is dead, detaching");
+                            _cachedExcelHwnd = 0; // invalidate BEFORE detach
                             try { _staWorker.Invoke(() => { _session.Detach(); return "ok"; }, 1000); }
                             catch { /* if even this fails, let the next loop catch it */ }
                             try { _hookConnection.Disconnect(); } catch { }
@@ -606,7 +609,17 @@ public class DaemonServer
                                     _staWorker.Invoke(() => { _session.Attach(); return "ok"; }, 5000);
                                     if (_session.IsAttached)
                                     {
-                                        DaemonLog($"Auto-attach: bound to Excel pid={targetPid}");
+                                        // Cache the hwnd ONCE so CaptureLoop never
+                                        // touches the STA worker per-frame.
+                                        try
+                                        {
+                                            nint h = 0;
+                                            _staWorker.Invoke(() => { h = (nint)_session.App.Hwnd; return "ok"; }, 1000);
+                                            _cachedExcelHwnd = h;
+                                        }
+                                        catch { _cachedExcelHwnd = 0; }
+
+                                        DaemonLog($"Auto-attach: bound to Excel pid={targetPid} hwnd=0x{_cachedExcelHwnd:X}");
                                         consecutiveFailures = 0;
                                         try { TryConnectHooks(); } catch { }
                                         try
