@@ -457,15 +457,92 @@ public class DaemonServer
                 _studioHost.Bus.Publish(XRai.Studio.StudioEvent.Now("rebuild.step", "daemon", data));
             });
 
+        // ── Periodic state poller ───────────────────────────────────
+        // The hooks pipe is request/response only — the daemon has NO
+        // background reader for unsolicited push events from the add-in.
+        // Events like model.exposed and pane.exposed fire in Excel but
+        // never reach Studio unless we actively poll for them. This
+        // poller dispatches {"cmd":"model"} and {"cmd":"pane"} every 3
+        // seconds and publishes the results as bus events so the App
+        // State and control-tree panels in the dashboard stay populated.
+        StartStatePoller();
+
         // ── Auto-attach watchdog ────────────────────────────────────
-        // Background loop that polls every 2s for an Excel process and
-        // attaches to it the moment one appears. Survives Excel kills/
-        // relaunches: when the current attachment dies, the watchdog
-        // re-attaches automatically. This is the difference between a
-        // "demo" (user has to type {"cmd":"connect"}) and a shippable
-        // product (user just opens Excel and Studio's screenshot panel
-        // springs to life).
         StartAutoAttachWatchdog();
+    }
+
+    private void StartStatePoller()
+    {
+        var thread = new Thread(() =>
+        {
+            DaemonLog("State poller started");
+            while (_running && _studioHost != null)
+            {
+                try
+                {
+                    // Only poll when hooks are connected AND Studio has clients
+                    if (_hookConnection.IsConnected && _studioHost?.Bus.SubscriberCount > 0)
+                    {
+                        // Poll the ViewModel
+                        try
+                        {
+                            var modelResponse = _router.Dispatch("{\"cmd\":\"model\"}");
+                            var modelNode = System.Text.Json.Nodes.JsonNode.Parse(modelResponse);
+                            if (modelNode is System.Text.Json.Nodes.JsonObject modelObj &&
+                                modelObj["ok"]?.GetValue<bool>() == true)
+                            {
+                                // Extract properties — the model command returns them
+                                // as top-level fields alongside ok/name/type
+                                var props = new System.Text.Json.Nodes.JsonObject();
+                                foreach (var kvp in modelObj)
+                                {
+                                    if (kvp.Key is "ok" or "name" or "type" or "available_models") continue;
+                                    props[kvp.Key] = kvp.Value?.DeepClone();
+                                }
+                                if (props.Count > 0)
+                                {
+                                    _studioHost?.Bus.Publish(XRai.Studio.StudioEvent.Now(
+                                        "model.exposed", "poller", new System.Text.Json.Nodes.JsonObject
+                                        {
+                                            ["properties"] = props,
+                                            ["name"] = modelObj["name"]?.DeepClone(),
+                                            ["modelType"] = modelObj["type"]?.DeepClone(),
+                                        }));
+                                }
+                            }
+                        }
+                        catch { /* model not available — skip this tick */ }
+
+                        // Poll the pane control tree
+                        try
+                        {
+                            var paneResponse = _router.Dispatch("{\"cmd\":\"pane\"}");
+                            var paneNode = System.Text.Json.Nodes.JsonNode.Parse(paneResponse);
+                            if (paneNode is System.Text.Json.Nodes.JsonObject paneObj &&
+                                paneObj["ok"]?.GetValue<bool>() == true)
+                            {
+                                _studioHost?.Bus.Publish(XRai.Studio.StudioEvent.Now(
+                                    "pane.exposed", "poller", paneObj.DeepClone()));
+                            }
+                        }
+                        catch { /* pane not available — skip */ }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"State poller error: {ex.Message}");
+                }
+
+                try { Thread.Sleep(3000); }
+                catch { break; }
+            }
+            DaemonLog("State poller stopped");
+        })
+        {
+            IsBackground = true,
+            Name = "xrai-studio-state-poller",
+        };
+        thread.Start();
     }
 
     private CancellationTokenSource? _autoAttachCts;
