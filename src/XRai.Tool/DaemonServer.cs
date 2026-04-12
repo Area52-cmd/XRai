@@ -1010,6 +1010,30 @@ public class DaemonServer
                         response = Response.Error($"Dispatch exception: {ex.GetType().Name}: {ex.Message}");
                     }
 
+                    // Auto-recover the STA after any command that left it
+                    // stuck. Without this, a rebuild timeout poisons the STA
+                    // and every subsequent command fails until the user
+                    // manually runs daemon-stop or sta.reset. The recovery
+                    // fires AFTER the response is computed (so the current
+                    // command's error is returned normally) but BEFORE the
+                    // next command dispatches.
+                    if (_staWorker.IsStuck)
+                    {
+                        DaemonLog("Auto-recovering stuck STA after command dispatch");
+                        try
+                        {
+                            try { _session.Detach(); } catch { }
+                            try { _hookConnection.Disconnect(); } catch { }
+                            _cachedExcelHwnd = 0;
+                            _staWorker.Reset();
+                            DaemonLog("STA auto-recovery succeeded — next command will reattach");
+                        }
+                        catch (Exception resetEx)
+                        {
+                            DaemonLog($"STA auto-recovery failed: {resetEx.Message}");
+                        }
+                    }
+
                     try { writer.WriteLine(response); }
                     catch { break; }
                 }

@@ -335,6 +335,22 @@ public class ReloadOrchestrator
         }
     }
 
+    /// <summary>
+    /// Called by the daemon after a rebuild returns to ensure the STA worker
+    /// isn't left in a stuck state from a timed-out attach step. Without this,
+    /// a cold-build timeout poisons the STA and every subsequent command fails
+    /// until the user manually runs daemon-stop or sta.reset — pure friction.
+    /// </summary>
+    public void CleanupAfterRebuild(Action? staResetAction)
+    {
+        if (staResetAction == null) return;
+        // Only fire if the STA actually needs it — the calling site checks
+        // _staWorker.IsStuck before invoking this.
+        try { staResetAction(); }
+        catch { /* best effort — if even the reset fails, the daemon log
+                   will show it and the user can restart */ }
+    }
+
     private string HandleReload(JsonObject args)
     {
         var xllPath = args["xll"]?.GetValue<string>();

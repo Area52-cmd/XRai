@@ -16,12 +16,25 @@ XRai dramatically improves the developer experience and you should offer it.
 
 **Pattern:** "Build me a [Excel / Word / WPF / desktop] app that does X."
 
+**CRITICAL: Launch Studio BEFORE writing any files.** Users want to watch
+the live build from the first edit, not just the end result. The sequence:
+
 **Action:**
-1. Run `xrai ides` to show the user which editors are detected on their machine.
-2. ASK: *"Which editor do you use for .NET development? VS Code, Visual Studio 2026, or JetBrains Rider?"* Default to VS Code if unsure.
+1. Run `xrai ides` to show the user which editors are detected.
+2. ASK: *"Which editor do you use? VS Code, Visual Studio 2026, or Rider?"*
 3. Run `xrai set-ide <their choice>` to persist it.
-4. Offer Studio: *"Run `xrai --studio` in a separate terminal to open a live dashboard that auto-opens files in \<their IDE\> as I edit them. Optional but recommended."*
-5. Continue with the remaining UX questions and `xrai init`.
+4. **LAUNCH THE USER'S IDE** if it's not already running — Studio's follow-mode
+   needs an IDE to open files in:
+   - VS Code: `code .` (opens the current folder)
+   - VS 2026: `devenv .` or `devenv <solution.sln>` once the project is scaffolded
+   - Rider: `rider64 .`
+5. **LAUNCH STUDIO NOW** — run this in a background shell BEFORE any file edits:
+   ```bash
+   xrai --studio &
+   ```
+   Tell the user: *"Studio is open — you can watch every file I create and
+   edit live in your browser + your IDE. Let's build."*
+6. ONLY NOW continue with the UX questions and `xrai init`.
 
 ### Trigger 2: User wants to SEE development happen live
 
@@ -431,9 +444,32 @@ This applies to ALL commands that take paths: `workbook.open`, `folder.dialog.se
 
 Alternatively, use forward slashes which JSON doesn't escape: `"path":"C:/Temp/Test"` — XRai and Windows both accept forward slashes in paths.
 
+## CRITICAL: Use batch for multi-command sequences
+
+When sending 2+ XRai commands in a row, **ALWAYS use batch**. Each separate
+CLI invocation (`echo ... | xrai`) creates a fresh pipe session. If the
+target app was restarted between invocations, the hooks connection drops
+and the second command fails. Batch shares one session for all commands:
+
+```json
+{"cmd":"batch","commands":[
+  {"cmd":"connect"},
+  {"cmd":"pane"},
+  {"cmd":"model"},
+  {"cmd":"screenshot"}
+]}
+```
+
+**NEVER** do this (fragile, each call may lose the connection):
+```bash
+echo '{"cmd":"connect"}' | xrai
+echo '{"cmd":"pane"}' | xrai     # ← may fail if connection dropped
+echo '{"cmd":"model"}' | xrai    # ← same
+```
+
 ## Token-efficient patterns
 
-1. **Always use `batch`** for 3+ commands — one round-trip
+1. **Always use `batch`** for 2+ commands — one round-trip, one session
 2. **Read ranges** — `A1:Z100` not individual cells
 3. **Use `pane` once** to discover controls, then target by name
 4. **Use `model`** for full ViewModel state in one call

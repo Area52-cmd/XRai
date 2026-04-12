@@ -161,7 +161,10 @@ public class CommandRouter
         // rebuild does: kill Excel → NuGet restore → dotnet build → launch .xll
         // → attach COM → reconnect hooks. The build step alone can take 30-60s
         // on a cold build. 180s covers the realistic worst case.
-        ["rebuild"] = 180_000,
+        // 300s covers cold builds: NuGet restore (internet download) +
+        // full compile of all deps on a first-ever build. The user reported
+        // 180s wasn't enough — first cold build + NuGet restore exceeded it.
+        ["rebuild"] = 300_000,
     };
 
     /// <summary>
