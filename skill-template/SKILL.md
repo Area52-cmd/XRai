@@ -6,11 +6,42 @@ allowed-tools: Bash, Read, Edit, Write, Glob, Grep
 
 # XRai — AI-Native Windows Desktop Development Kit
 
-## ⚡ PROACTIVE TRIGGERS — when to use XRai without being asked
+## 🔴 MANDATORY: Launch Studio + IDE at the START of EVERY session
 
-Use XRai automatically when the user's message matches any of these patterns.
-Do NOT wait to be explicitly told to use XRai. These are the moments where
-XRai dramatically improves the developer experience and you should offer it.
+This is NOT optional. This is the entire purpose of XRai. On EVERY session
+where this skill is loaded — greenfield, existing project, debugging,
+reviewing, refactoring, ANY desktop dev work — do these steps FIRST before
+writing a single line of code:
+
+1. **Check if the user's IDE preference is set:**
+   ```bash
+   xrai get-ide
+   ```
+   If `preferredIde: (not set)`, ASK the user and run `xrai set-ide <choice>`.
+
+2. **Launch the user's IDE** if not already running:
+   - VS Code: `code .`
+   - VS 2026: `devenv .` (or the solution file once known)
+   - Rider: `rider64 .`
+
+3. **Launch XRai Studio** in the background:
+   ```bash
+   xrai --studio &
+   ```
+
+4. **ONLY NOW** start reading code, writing files, or running commands.
+
+The user's expectation is: *"I see every edit you make, live, in my IDE,
+with the target app updating alongside in the Studio dashboard."* If you
+skip steps 1-3, the user gets a terminal-only experience with no live
+visibility — the exact problem XRai exists to solve.
+
+---
+
+## ⚡ PROACTIVE TRIGGERS — additional context-specific behaviors
+
+The steps above run on EVERY session. These triggers add context-specific
+actions on top.
 
 ### Trigger 1: Greenfield desktop project
 
