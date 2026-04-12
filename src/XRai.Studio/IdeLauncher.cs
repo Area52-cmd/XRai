@@ -111,10 +111,13 @@ public static class IdeLauncher
                         return _cachedDetect;
                     }
                     // Install paths still fresh, but refresh Running flag.
+                    // Build a NEW list to avoid "Collection was modified
+                    // during enumeration" — IdeInfo is immutable (init props).
                     var runningSet = GetRunningIdes();
+                    var refreshed = new List<IdeInfo>(_cachedDetect.Count);
                     foreach (var i in _cachedDetect)
                     {
-                        var refreshed = new IdeInfo
+                        refreshed.Add(new IdeInfo
                         {
                             Kind = i.Kind,
                             DisplayName = i.DisplayName,
@@ -124,13 +127,10 @@ public static class IdeLauncher
                             Version = i.Version,
                             InstallUrl = i.InstallUrl,
                             InstallTagline = i.InstallTagline,
-                        };
-                        // Mutate the cached entry in place via re-ref —
-                        // simpler than rebuilding the whole list.
-                        var idx = _cachedDetect.IndexOf(i);
-                        _cachedDetect[idx] = refreshed;
+                        });
                     }
-                    _cacheStampMs = nowMs - InstallCacheTtlMs + RunningCacheTtlMs; // partial-refresh stamp
+                    _cachedDetect = refreshed;
+                    _cacheStampMs = nowMs - InstallCacheTtlMs + RunningCacheTtlMs;
                     return _cachedDetect;
                 }
             }
