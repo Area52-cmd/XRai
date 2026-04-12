@@ -1,6 +1,6 @@
 ---
 name: xrai-excel
-description: AI-native Windows desktop development kit. Use PROACTIVELY when the user (a) asks to build, debug, scaffold, or review ANY desktop application on Windows (Excel-DNA add-ins, WPF apps, WinForms apps, Office add-ins, task panes, ribbons, UDFs, .xll files), (b) mentions "watching code changes live" or wants a live dashboard of AI-driven development, (c) starts a greenfield desktop project from an empty folder, (d) says "vibe coding" or asks for instant visual feedback while building a desktop UI, (e) mentions Excel, Word, PowerPoint, Outlook, or any Office automation, (f) asks to drive / inspect / test / screenshot a running Windows application, (g) needs structured access to a live Excel workbook (cells, charts, tables, pivots, Power Query, DAX, VBA, slicers, conditional formatting, etc.), (h) needs WPF / WinForms task pane automation (click buttons, type into TextBoxes, read DataGrids, bind ViewModels), (i) asks about Microsoft Visual Studio 2022/2026, VS Code, or JetBrains Rider integration for AI-assisted desktop dev. The first thing to do on ANY greenfield desktop session is ASK the user which editor they use and persist it via `xrai set-ide <kind>`. Then offer XRai Studio via `xrai --studio` for a live localhost dashboard that watches your agent activity + the target app side-by-side. Provides 288 JSON commands covering every aspect of Excel / Office / WPF desktop automation.
+description: AI-native Windows desktop development kit. Use when building, debugging, or reviewing desktop apps (Excel-DNA, WPF, WinForms, Office add-ins). Also use when user mentions live dashboard, vibe coding, watching code changes, or Excel/Word/PowerPoint automation. 288 JSON commands + XRai Studio live dashboard + IDE follow-mode.
 allowed-tools: Bash, Read, Edit, Write, Glob, Grep
 ---
 
@@ -273,86 +273,26 @@ Alternative: explicit wait in a batch:
 ]}
 ```
 
-## Command quick-reference (top 40)
+## Essential commands (the 10 you use most)
 
-**Session & lifecycle:**
-| Command | Description |
+| Command | What it does |
 |---------|-------------|
-| `connect` | Attach + ensure workbook + hooks (ALWAYS first command) |
-| `rebuild` | Kill → restore → build → launch → connect (all-in-one) |
-| `status` | Check attachment state, hooks, workbook info |
-| `batch` | Execute multiple commands in one round-trip |
-
-**Cells & data:**
-| Command | Description |
-|---------|-------------|
-| `read` | Read cell(s) — use ranges: `A1:Z50` |
-| `type` | Write value or formula (numbers, strings, booleans, `array:true` for CSE) |
-| `format` | Set bold/italic/bg/fg/number_format on a range |
-| `sort` | Sort a range by column |
-| `validation` / `validation.read` | Create or read data validation rules |
-| `format.conditional` / `format.conditional.read` | Create or read conditional formatting rules |
-
-**Task pane (requires XRai.Hooks):**
-| Command | Description |
-|---------|-------------|
+| `connect` | Attach to running app + hooks (ALWAYS first) |
+| `rebuild` | Kill → build → launch → attach (all-in-one) |
+| `batch` | Run multiple commands in one round-trip |
 | `pane` | List all task pane controls |
-| `pane.click` | Click a button (single OnClick, no retry) |
-| `pane.read` | Read a control's value |
-| `pane.type` | Type into a TextBox |
-| `pane.wait` | Wait for control state (value/enabled/exists) |
-| `pane.list.read` | Read all items from ListBox/ListView/ComboBox |
-| `pane.list.select` | Select item by index or rendered display text |
-| `pane.expand` | Open ComboBox dropdown / Expander / TreeViewItem |
-| `pane.grid.read` | Read DataGrid as JSON array |
-| `pane.screenshot` | Screenshot just the pane (not full Excel window) |
-| `model` | Read entire ViewModel (all properties + collections) |
-| `model.set` | Set a ViewModel property |
+| `pane.click` | Click a button |
+| `model` | Read entire ViewModel |
+| `screenshot` | Capture the app window |
+| `status` | Check attachment + hooks state |
+| `ribbon.click` | Click a ribbon button by name |
+| `hooks.connect` | Connect to any app's hooks pipe by PID |
 
-**Ribbon, dialogs, screenshots:**
-| Command | Description |
-|---------|-------------|
-| `ribbon.click` | Click ribbon button by `button` display name (preferred) or `automation_id` |
-| `ribbon.buttons` | List every button on a tab with Names + AutomationIds |
-| `dialog.click` | Click dialog button (UIA + Win32 fallback) |
-| `dialog.dismiss` | Auto-dismiss any dialog |
-| `dialog.wait` | Wait for a dialog to appear |
-| `folder.dialog.navigate` | Navigate folder picker via address bar |
-| `win32.dialog.type` | Type into Win32/WinForms dialog edit field |
-| `screenshot` | Capture Excel window (main + modal composited) |
-
-**Power Query, DAX, VBA:**
-| Command | Description |
-|---------|-------------|
-| `powerquery.list` / `.view` / `.create` / `.edit` / `.refresh` / `.delete` | Full Power Query management |
-| `vba.list` / `.view` / `.import` / `.update` / `.delete` | VBA module code management |
-| `slicer.list` / `.create` / `.set` / `.clear` / `.read` / `.delete` | Slicer control |
-| `connection.list` / `.refresh` / `.delete` | Data connection management |
-
-**Desktop automation (any Windows app):**
-| Command | Description |
-|---------|-------------|
-| `clipboard.read` / `.write` / `.clear` | Clipboard operations |
-| `process.list` / `.start` / `.kill` / `.wait` | Process management |
-| `window.list` / `.move` / `.focus` / `.minimize` / `.maximize` | Window control |
-| `keys.send` | Send keystrokes to focused window |
-| `mouse.click` / `.move` / `.scroll` | Raw mouse input at screen coordinates |
-| `app.launch` / `.list` / `.attach` | Launch and attach to any Windows app |
-
-**Testing & assertions:**
-| Command | Description |
-|---------|-------------|
-| `assert.cell` | Assert cell value/formula — returns pass/fail |
-| `assert.pane` | Assert pane control value — returns pass/fail |
-| `assert.model` | Assert ViewModel property — returns pass/fail |
-| `test.start` / `.step` / `.end` / `.report` | Test session with HTML/JUnit XML reporting |
-| `screenshot.baseline` / `.compare` | Visual regression (pixel diff with threshold) |
-| `ocr.screen` / `.element` | OCR text from screen regions or UI elements |
-| `wait.element` / `.window` / `.property` / `.gone` | Intelligent waits (poll with timeout) |
+For the full command catalog (288 commands): read `./reference/commands-quick.md`
+or run `{"cmd":"help"}` for the live list from the binary.
 
 ## Running XRai
 
-Pipe JSON to the binary, one command per line:
 ```bash
 cat <<'CMDS' | "$HOME/.claude/skills/xrai-excel/bin/XRai.Tool.exe"
 {"cmd":"connect"}
@@ -361,17 +301,9 @@ cat <<'CMDS' | "$HOME/.claude/skills/xrai-excel/bin/XRai.Tool.exe"
 CMDS
 ```
 
-For multi-command sessions, start the daemon first: `XRai.Tool.exe --daemon`
-Details: `./reference/troubleshooting.md` (Daemon mode section)
+Response: `{"ok":true, ...}` or `{"ok":false, "error":"..."}`.
 
-## Response format
-
-- Success: `{"ok":true, ...data...}`
-- Error: `{"ok":false, "error":"message"}`
-
-## Respecting the user's Excel state
-
-If `connect` reports an existing `active_workbook` you didn't create, DO NOT write test data without permission. Create a test sheet: `{"cmd":"sheet.add","name":"XRai Test"}`.
+If `connect` reports an existing `active_workbook`, don't write test data — create a test sheet: `{"cmd":"sheet.add","name":"XRai Test"}`.
 
 ## Error recovery
 
@@ -420,47 +352,12 @@ XRai.Tool.exe daemon-status               # Check daemon state
 XRai.Tool.exe daemon-stop                 # Stop daemon
 ```
 
-## XRai Studio — live dashboard for the user
+## XRai Studio
 
-**OFFER STUDIO TO THE USER UP FRONT** when starting a new add-in build or any
-session where they'll want to watch what you're doing. It is the difference
-between "vibe coding" and a controlled, visible build experience.
-
-```bash
-XRai.Tool.exe --studio
-```
-
-This launches a localhost web dashboard that:
-
-- Tails THIS Claude Code session's transcript in real time and renders every
-  message, edit, and tool call as a live activity feed (zero token cost — the
-  transcript is already on disk).
-- Shows a live screenshot of the running target app (Excel) at 4 fps.
-- Detects the user's installed IDEs (VS Code, Visual Studio 2022/2026, Rider)
-  and offers a one-click "follow my edits in the IDE" mode that auto-opens
-  every file you edit at the right line — the user watches code land in
-  THEIR own editor, never inside Studio.
-- Shows file change events, build progress, and ViewModel state alongside.
-
-**Critical: Studio is a passive viewer, not a replacement for the user's IDE
-or terminal.** Users keep using VS Code / VS 2022 / VS 2026 / Rider for
-editing, keep using Claude Code in their terminal for prompting, keep using
-the dashboard as a live "cockpit view" of everything happening.
-
-**Auto-attach**: Studio auto-attaches to Excel as soon as it appears — the
-user does NOT need to call `{"cmd":"connect"}` first. If Excel isn't running,
-Studio waits and attaches the moment they open it. If Excel is killed
-mid-session, Studio detaches cleanly and re-attaches when the user relaunches.
-
-**When to mention Studio to the user**:
-- They start a new project from scratch
-- They ask "how do I see what you're doing?"
-- They mention wanting to follow along visually
-- They ask about live debugging or the dev experience
-
-Tell them: *"Run `xrai --studio` in a separate terminal — it'll open a
-dashboard that shows my edits live in your IDE plus the Excel window
-streaming alongside. Zero impact on this session."*
+Studio is launched in the MANDATORY section above on every session. It is a
+passive localhost dashboard (zero tokens, zero API calls) that shows the
+running app + agent activity + IDE follow. Auto-attaches to any app with
+XRai.Hooks. Settings via the ⚙ gear icon in the top bar.
 
 ## CRITICAL: Windows paths in JSON require double backslashes
 
