@@ -1241,6 +1241,28 @@ function wireControls() {
   const chipIde = $("#chip-ide");
   if (chipIde) chipIde.style.cursor = "pointer";
 
+  // Bug report — one-click capture of all logs + state
+  $("#btn-bug-report")?.addEventListener("click", async () => {
+    toast("Capturing bug report…", "info", 3000);
+    try {
+      const res = await fetch("/command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cmd: "bug-report" }),
+      });
+      const result = await res.json();
+      if (result.ok && result.path) {
+        toast(`Bug report saved: ${result.path}`, "ok", 8000);
+      } else if (result.path) {
+        toast(`Bug report saved: ${result.path}`, "ok", 8000);
+      } else {
+        toast(`Bug report failed: ${result.error || "unknown"}`, "err", 6000);
+      }
+    } catch (err) {
+      toast(`Bug report error: ${err}`, "err", 6000);
+    }
+  });
+
   // Settings drawer — gear icon in top bar
   $("#btn-settings")?.addEventListener("click", openSettingsDrawer);
   $("#settings-close")?.addEventListener("click", closeSettingsDrawer);

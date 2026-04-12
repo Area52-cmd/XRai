@@ -1085,6 +1085,90 @@ public class DaemonServer
             }
         });
 
+        // Bug report from the dashboard — same as the CLI `xrai bug-report`
+        // but callable via {"cmd":"bug-report"} so the Studio UI can trigger
+        // it with one button click and show the user where the zip landed.
+        _router.Register("bug-report", _ =>
+        {
+            try
+            {
+                var outPath = Path.Combine(Path.GetTempPath(),
+                    $"xrai-bugreport-{DateTime.UtcNow:yyyyMMdd-HHmmss}.zip");
+
+                var stagingDir = Path.Combine(Path.GetTempPath(),
+                    $"xrai-bugreport-staging-{Guid.NewGuid():N}");
+                Directory.CreateDirectory(stagingDir);
+
+                int filesCollected = 0;
+                try
+                {
+                    // Daemon log
+                    if (File.Exists(LogPath))
+                    {
+                        File.Copy(LogPath, Path.Combine(stagingDir, "daemon.log"));
+                        filesCollected++;
+                    }
+
+                    // Pilot logs
+                    var logsDir = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "XRai", "logs");
+                    if (Directory.Exists(logsDir))
+                    {
+                        foreach (var f in Directory.GetFiles(logsDir, "pilot-*.log"))
+                        {
+                            try { File.Copy(f, Path.Combine(stagingDir, Path.GetFileName(f))); filesCollected++; } catch { }
+                        }
+                    }
+
+                    // Studio preferences
+                    try
+                    {
+                        var prefsPath = Path.Combine(
+                            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                            "XRai", "studio", "preferences.json");
+                        if (File.Exists(prefsPath))
+                        {
+                            File.Copy(prefsPath, Path.Combine(stagingDir, "preferences.json"));
+                            filesCollected++;
+                        }
+                    }
+                    catch { }
+
+                    // Startup logs
+                    try
+                    {
+                        foreach (var f in Directory.GetFiles(Path.GetTempPath(), "*-startup.log")
+                            .OrderByDescending(p => new FileInfo(p).LastWriteTimeUtc).Take(3))
+                        {
+                            try { File.Copy(f, Path.Combine(stagingDir, "startup-" + Path.GetFileName(f))); filesCollected++; } catch { }
+                        }
+                    }
+                    catch { }
+
+                    // Zip
+                    if (File.Exists(outPath)) File.Delete(outPath);
+                    System.IO.Compression.ZipFile.CreateFromDirectory(stagingDir, outPath);
+
+                    return Response.Ok(new
+                    {
+                        path = outPath,
+                        files_collected = filesCollected,
+                        size_kb = new FileInfo(outPath).Length / 1024,
+                        hint = "Share this zip with whoever is debugging. Contains daemon.log + pilot logs + preferences.",
+                    });
+                }
+                finally
+                {
+                    try { Directory.Delete(stagingDir, recursive: true); } catch { }
+                }
+            }
+            catch (Exception ex)
+            {
+                return Response.ErrorFromException(ex, "bug-report");
+            }
+        });
+
         _router.Register("sta.reset", _ =>
         {
             bool wasStuck = _staWorker.IsStuck;
