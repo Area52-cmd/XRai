@@ -45,9 +45,21 @@ class Program
                     // Run as the long-lived daemon process
                     return new DaemonServer().Run();
                 case "--studio" or "studio":
-                    // Run as daemon with the Studio web dashboard enabled.
-                    // Browser launches automatically by default. Pass
-                    // --no-browser to suppress (used by smoke tests / RDP).
+                    // Auto-kill any existing daemon before starting Studio.
+                    // When a user switches between projects, the old daemon
+                    // is watching the OLD project's file tree and attached
+                    // to the OLD app's hooks — starting a fresh daemon is
+                    // the only way to get clean state for the new project.
+                    // Pass --keep-daemon to skip this (rare, for debugging).
+                    if (!args.Contains("--keep-daemon"))
+                    {
+                        if (DaemonServer.IsDaemonRunning())
+                        {
+                            try { DaemonClient.SendStop(); }
+                            catch { }
+                            System.Threading.Thread.Sleep(1500);
+                        }
+                    }
                     return new DaemonServer
                     {
                         StudioEnabled = true,

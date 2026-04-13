@@ -222,8 +222,6 @@ public class DaemonServer
         {
             PipeAuth.CleanupOrphanedTokens(name =>
             {
-                // A pipe is considered alive if we can open it as a client.
-                // For our own pipe, skip the liveness check (we're about to create it).
                 if (name == PipeName) return true;
                 try
                 {
@@ -233,6 +231,39 @@ public class DaemonServer
                 }
                 catch { return false; }
             });
+        }
+        catch { }
+
+        // Clean up stale pilot logs from dead Excel/app processes so
+        // `xrai logs tail --source pilot` doesn't show logs from a
+        // previous project's add-in. Keep only logs from PIDs that are
+        // currently running. Best-effort — deletion failures are ignored.
+        try
+        {
+            var logsDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "XRai", "logs");
+            if (Directory.Exists(logsDir))
+            {
+                foreach (var file in Directory.GetFiles(logsDir, "pilot-*.log"))
+                {
+                    try
+                    {
+                        var fileName = Path.GetFileNameWithoutExtension(file); // "pilot-12345"
+                        var pidStr = fileName.Replace("pilot-", "");
+                        if (int.TryParse(pidStr, out var pid))
+                        {
+                            try { System.Diagnostics.Process.GetProcessById(pid); }
+                            catch (ArgumentException)
+                            {
+                                // Process doesn't exist — safe to delete
+                                File.Delete(file);
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
         }
         catch { }
 
