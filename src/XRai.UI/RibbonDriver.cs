@@ -94,6 +94,64 @@ public class RibbonDriver
 
     private AutomationElement[] GetAllTabs()
     {
+        // On Windows 11 build 26200 + Office 365, the ribbon's UIA tree
+        // can be lazily populated. If the first walk returns 0 tabs:
+        //   1. Focus the window (BringToFront)
+        //   2. Send Alt to force the ribbon into keytip mode (expands it
+        //      if minimized) then Escape to dismiss keytips
+        //   3. Retry the walk up to 3 times with 300ms delays
+        // This covers the "ribbon.tabs returns empty" scenario reported
+        // on Win11 26200.
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            var tabs = _window!.FindAllDescendants(cf => cf.ByControlType(ControlType.TabItem));
+            if (tabs.Length > 0) return tabs;
+
+            if (attempt == 0)
+            {
+                // First retry: focus the window
+                try { _window.SetForeground(); } catch { }
+                Thread.Sleep(200);
+            }
+            else if (attempt == 1)
+            {
+                // Second retry: press and release Alt to trigger ribbon
+                // keytip expansion (forces UIA tree population)
+                try
+                {
+                    FlaUI.Core.Input.Keyboard.Press(FlaUI.Core.WindowsAPI.VirtualKeyShort.ALT);
+                    Thread.Sleep(100);
+                    FlaUI.Core.Input.Keyboard.Press(FlaUI.Core.WindowsAPI.VirtualKeyShort.ESCAPE);
+                    Thread.Sleep(300);
+                }
+                catch { }
+            }
+            else if (attempt == 2)
+            {
+                // Third retry: invalidate the cached UIA tree and
+                // reattach to get a fresh automation session
+                try
+                {
+                    _automation?.Dispose();
+                    _automation = new UIA3Automation();
+                    var procs = Process.GetProcessesByName("EXCEL");
+                    if (procs.Length > 0)
+                    {
+                        _app = Application.Attach(procs[0]);
+                        _window = _app.GetMainWindow(_automation, TimeSpan.FromSeconds(3));
+                        foreach (var p in procs) try { p.Dispose(); } catch { }
+                    }
+                }
+                catch { }
+                Thread.Sleep(300);
+            }
+            else
+            {
+                Thread.Sleep(300);
+            }
+        }
+
+        // All retries exhausted — return whatever we got (may be empty)
         return _window!.FindAllDescendants(cf => cf.ByControlType(ControlType.TabItem));
     }
 

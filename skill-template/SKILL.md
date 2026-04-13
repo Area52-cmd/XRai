@@ -1,6 +1,6 @@
 ---
 name: xrai-excel
-description: AI-native Windows desktop development kit. Use when building, debugging, or reviewing desktop apps (Excel-DNA, WPF, WinForms, Office add-ins). Also use when user mentions live dashboard, vibe coding, watching code changes, or Excel/Word/PowerPoint automation. 288 JSON commands + XRai Studio live dashboard + IDE follow-mode.
+description: Drives live Windows desktop apps (Excel, WPF, WinForms, Office add-ins) via 288 structured JSON commands. Provides XRai Studio live dashboard, IDE follow-mode, task pane introspection, ViewModel binding, screenshots, and testing assertions.
 allowed-tools: Bash, Read, Edit, Write, Glob, Grep
 ---
 
