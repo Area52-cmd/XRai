@@ -78,7 +78,11 @@ internal static class ControlPathResolver
         }
 
         if (current == null) return false;
-        adapter = new ControlAdapter(current);
+        // Ephemeral: no DPD subscriptions. Path-resolved adapters are created
+        // fresh per call and discarded; if they subscribed, we'd accumulate
+        // value-change callbacks on the target element every time the same
+        // path was clicked.
+        adapter = new ControlAdapter(current, subscribeToChanges: false);
         return true;
     }
 

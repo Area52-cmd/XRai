@@ -1349,13 +1349,82 @@ public class PipeServer
         });
     }
 
-    private string InvokeOnUI(Func<string> action)
+    /// <summary>
+    /// UI thread dispatch with pile-up-safe timeout. The previous naive
+    /// Dispatcher.Invoke hangs indefinitely when the UI thread is blocked on
+    /// a modal, slow binding, or wedged COM call; subsequent hook commands
+    /// queue behind it forever. My earlier fix (d3cc762, reverted) added a
+    /// timeout but let each new call enqueue ANOTHER dispatcher op on top of
+    /// the stuck one — Excel then raised "waiting for another application".
+    ///
+    /// This implementation:
+    ///   - Serializes all incoming InvokeOnUI calls through a single gate.
+    ///   - If a prior op is still running, checks its Status first; cleans
+    ///     up on completion so we don't mistake old stuckness for new.
+    ///   - If still running past the timeout budget, returns XRAI_UI_STUCK
+    ///     IMMEDIATELY without enqueuing a new op — no pile-up.
+    ///   - Healthy path is a single lock + single Invoke call.
+    /// </summary>
+    public static int DefaultUiTimeoutMs { get; set; } = 15000;
+
+    private readonly object _uiGate = new();
+    private System.Windows.Threading.DispatcherOperation? _inflightOp;
+
+    private string InvokeOnUI(Func<string> action) => InvokeOnUI(action, DefaultUiTimeoutMs);
+
+    private string InvokeOnUI(Func<string> action, int timeoutMs)
     {
         if (_uiDispatcher == null || _uiDispatcher.CheckAccess())
             return action();
 
+        System.Windows.Threading.DispatcherOperation op;
+        bool alreadyStuck = false;
+        lock (_uiGate)
+        {
+            // If a prior op has finished, forget it — healthy path again.
+            if (_inflightOp != null && (_inflightOp.Status ==
+                System.Windows.Threading.DispatcherOperationStatus.Completed ||
+                _inflightOp.Status == System.Windows.Threading.DispatcherOperationStatus.Aborted))
+            {
+                _inflightOp = null;
+            }
+            // If an earlier op is still running on the UI thread, do not
+            // enqueue another — fast-fail so the pipe stays responsive.
+            if (_inflightOp != null)
+                alreadyStuck = true;
+        }
+
+        if (alreadyStuck)
+        {
+            return Serialize(new
+            {
+                ok = false,
+                error = "UI thread is still processing a previous command that exceeded its timeout. " +
+                        "Run {\"cmd\":\"sta.reset\"} to recycle, or close any open modal dialog.",
+                code = "XRAI_UI_STUCK",
+            });
+        }
+
         string result = "";
-        _uiDispatcher.Invoke(() => result = action());
+        op = _uiDispatcher.InvokeAsync(() => result = action());
+        lock (_uiGate) { _inflightOp = op; }
+
+        if (!op.Task.Wait(timeoutMs))
+        {
+            // Op is still running — leave _inflightOp set so subsequent
+            // calls fast-fail until it finishes. Do NOT Abort (no-op for
+            // a running op) and do NOT touch the result (would be a race).
+            return Serialize(new
+            {
+                ok = false,
+                error = $"UI thread blocked: command did not complete within {timeoutMs}ms. " +
+                        "Run {\"cmd\":\"sta.reset\"} to recycle, or close any open modal.",
+                code = "XRAI_UI_TIMEOUT",
+                timeout_ms = timeoutMs,
+            });
+        }
+
+        lock (_uiGate) { if (_inflightOp == op) _inflightOp = null; }
         return result;
     }
 
@@ -1364,8 +1433,29 @@ public class PipeServer
         if (_uiDispatcher == null || _uiDispatcher.CheckAccess())
             return action();
 
+        bool alreadyStuck = false;
+        lock (_uiGate)
+        {
+            if (_inflightOp != null && (_inflightOp.Status ==
+                System.Windows.Threading.DispatcherOperationStatus.Completed ||
+                _inflightOp.Status == System.Windows.Threading.DispatcherOperationStatus.Aborted))
+            {
+                _inflightOp = null;
+            }
+            if (_inflightOp != null) alreadyStuck = true;
+        }
+
+        if (alreadyStuck)
+            throw new TimeoutException("UI thread is still processing a previous command. Run sta.reset.");
+
         T result = default!;
-        _uiDispatcher.Invoke(() => result = action());
+        var op = _uiDispatcher.InvokeAsync(() => result = action());
+        lock (_uiGate) { _inflightOp = op; }
+
+        if (!op.Task.Wait(DefaultUiTimeoutMs))
+            throw new TimeoutException($"UI thread blocked: did not respond within {DefaultUiTimeoutMs}ms. Run sta.reset.");
+
+        lock (_uiGate) { if (_inflightOp == op) _inflightOp = null; }
         return result;
     }
 
