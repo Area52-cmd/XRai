@@ -200,22 +200,44 @@ public class HookConnection : IDisposable
 
             // Read with timeout to prevent indefinite hangs when the Hooks
             // UI thread is blocked inside a modal dialog (ShowDialog).
-            string? response;
-            if (ReadTimeoutMs > 0)
+            //
+            // Event-vs-response multiplex: the hooks PipeServer writes
+            // unsolicited {"event":"log", ...} lines on the SAME pipe whenever
+            // PushEvent fires between commands. Those events can land in the
+            // read buffer before our actual response, making the next read
+            // return the event and leave the response stranded — commands then
+            // appear to hang or return the wrong shape. We loop past any
+            // event-shaped lines until we see a response (any non-event
+            // JSON object, e.g. {"ok":true,...}).
+            string? response = null;
+            var sw = Stopwatch.StartNew();
+            int remaining = ReadTimeoutMs > 0 ? ReadTimeoutMs : int.MaxValue;
+            while (true)
             {
-                var readTask = Task.Run(() => _reader!.ReadLine());
-                if (!readTask.Wait(ReadTimeoutMs))
+                string? line;
+                if (ReadTimeoutMs > 0)
                 {
-                    // Timeout — pipe is likely stuck behind a modal dialog.
-                    // Mark disconnected so subsequent calls auto-reconnect.
-                    ForceDisconnect();
-                    return null;
+                    var readTask = Task.Run(() => _reader!.ReadLine());
+                    int budget = Math.Max(1, remaining - (int)sw.ElapsedMilliseconds);
+                    if (!readTask.Wait(budget))
+                    {
+                        ForceDisconnect();
+                        return null;
+                    }
+                    line = readTask.Result;
                 }
-                response = readTask.Result;
-            }
-            else
-            {
-                response = _reader!.ReadLine();
+                else
+                {
+                    line = _reader!.ReadLine();
+                }
+
+                if (line == null) { response = null; break; }
+
+                // Skip server-pushed event lines; keep looping for the actual response.
+                if (line.StartsWith("{\"event\"", StringComparison.Ordinal)) continue;
+
+                response = line;
+                break;
             }
 
             if (response == null)
