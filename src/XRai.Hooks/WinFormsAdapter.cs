@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using WinButton = System.Windows.Forms.Button;
 using WinTextBox = System.Windows.Forms.TextBox;
@@ -165,22 +166,89 @@ public class WinFormsAdapter : IControlAdapter
             return result;
         }
 
-        // Non-button: focus + send Enter
+        // Non-button: focus + post ENTER to the control's window only.
+        // Previously used global System.Windows.Forms.SendKeys.Send("{ENTER}"),
+        // which calls SendInput under the hood and caused stuck-modifier-key
+        // bugs when the target lost focus (e.g. Excel killed during rebuild)
+        // between the keydown and keyup. PostMessage targets the control's
+        // HWND directly so no global keyboard state is touched.
         result.ResolvedToButtonBase = false;
         result.ResolvedTargetType = _control.GetType().Name;
         try
         {
             _control.Focus();
-            System.Windows.Forms.SendKeys.Send("{ENTER}");
-            result.Method = "Focus+SendKeys(ENTER)";
+            PostKey(_control.Handle, VK_RETURN);
+            result.Method = "Focus+PostMessage(WM_KEYDOWN/WM_KEYUP VK_RETURN)";
         }
         catch (Exception ex)
         {
             result.ErrorHint = $"Click fallback threw: {ex.Message}";
-            result.Method = "Focus+SendKeys(ENTER) (threw)";
+            result.Method = "Focus+PostMessage(ENTER) (threw)";
         }
         return result;
     }
+
+    // ── Safe keystroke delivery (no global SendInput) ─────────────────
+    // All keystroke paths go through PostMessage on the control's HWND so
+    // we never touch the OS-level keyboard state. Prevents the stuck Ctrl
+    // / Shift / Alt bug the global SendKeys.Send path used to cause when
+    // focus shifted mid-keystroke (common when Excel is killed during
+    // rebuild). Scoped window messages never leave modifiers dangling.
+    private const uint WM_KEYDOWN = 0x0100;
+    private const uint WM_KEYUP = 0x0101;
+    private const uint WM_CHAR = 0x0102;
+    private const int VK_RETURN = 0x0D;
+    private const int VK_TAB = 0x09;
+    private const int VK_ESCAPE = 0x1B;
+    private const int VK_BACK = 0x08;
+    private const int VK_DELETE = 0x2E;
+    private const int VK_SPACE = 0x20;
+    private const int VK_LEFT = 0x25;
+    private const int VK_UP = 0x26;
+    private const int VK_RIGHT = 0x27;
+    private const int VK_DOWN = 0x28;
+    private const int VK_HOME = 0x24;
+    private const int VK_END = 0x23;
+    private const int VK_F1 = 0x70;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    private static void PostKey(IntPtr hwnd, int vk)
+    {
+        if (hwnd == IntPtr.Zero) return;
+        PostMessage(hwnd, WM_KEYDOWN, (IntPtr)vk, IntPtr.Zero);
+        PostMessage(hwnd, WM_KEYUP, (IntPtr)vk, IntPtr.Zero);
+    }
+
+    private static void PostChar(IntPtr hwnd, char c)
+    {
+        if (hwnd == IntPtr.Zero) return;
+        PostMessage(hwnd, WM_CHAR, (IntPtr)c, IntPtr.Zero);
+    }
+
+    /// <summary>
+    /// Translate a common key token (ENTER, TAB, F1, ESCAPE, etc.) into a
+    /// Win32 virtual-key code. Returns 0 if not a known named key — caller
+    /// then treats it as a literal character.
+    /// </summary>
+    private static int NamedVk(string token) => token.ToUpperInvariant() switch
+    {
+        "ENTER" or "RETURN" => VK_RETURN,
+        "TAB" => VK_TAB,
+        "ESC" or "ESCAPE" => VK_ESCAPE,
+        "BACK" or "BACKSPACE" => VK_BACK,
+        "DEL" or "DELETE" => VK_DELETE,
+        "SPACE" => VK_SPACE,
+        "LEFT" => VK_LEFT,
+        "UP" => VK_UP,
+        "RIGHT" => VK_RIGHT,
+        "DOWN" => VK_DOWN,
+        "HOME" => VK_HOME,
+        "END" => VK_END,
+        "F1" => VK_F1,
+        _ => 0,
+    };
 
     public void Toggle()
     {
@@ -254,10 +322,43 @@ public class WinFormsAdapter : IControlAdapter
         try { _control.Focus(); }
         catch (Exception ex) { result.FocusWarning = ex.Message; }
 
+        // Replaced the old System.Windows.Forms.SendKeys.Send(keys) path —
+        // that used global SendInput and would leave Ctrl/Shift/Alt stuck
+        // on the OS keyboard state if focus shifted mid-keystroke (exactly
+        // what happens when a rebuild kills Excel with a keystroke still
+        // in flight). We now post window-scoped messages: WM_KEYDOWN/
+        // WM_KEYUP for named keys (ENTER, TAB, F1, arrows, ...) and WM_CHAR
+        // for literal text characters. Scoped to the control's HWND so no
+        // global keyboard state is ever modified.
+        var hwnd = _control.Handle;
+        if (hwnd == IntPtr.Zero)
+        {
+            result.FailedKeys.Add($"{keys}: control has no window handle");
+            result.ErrorHint = "Control is not yet realized (Handle == 0).";
+            return result;
+        }
+
         try
         {
-            System.Windows.Forms.SendKeys.Send(keys);
-            result.DeliveredKeys.Add(keys);
+            // Plus-separated tokens: "ENTER", "F1", "Hello" (last is literal).
+            foreach (var raw in keys.Split('+'))
+            {
+                var token = raw.Trim();
+                if (token.Length == 0) continue;
+
+                var vk = NamedVk(token);
+                if (vk != 0)
+                {
+                    PostKey(hwnd, vk);
+                    result.DeliveredKeys.Add(token);
+                }
+                else
+                {
+                    // Literal text: emit one WM_CHAR per character.
+                    foreach (var ch in token) PostChar(hwnd, ch);
+                    result.DeliveredKeys.Add(token);
+                }
+            }
         }
         catch (Exception ex)
         {
