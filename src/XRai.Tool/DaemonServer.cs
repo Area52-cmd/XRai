@@ -1359,13 +1359,45 @@ public class DaemonServer
                 try { _session.Detach(); } catch { }
                 try { _hookConnection.Disconnect(); } catch { }
                 _staWorker.Reset();
+
+                // Auto-reattach so callers get a fully-restored environment in a
+                // single command. Previously required two extra round-trips
+                // (connect + hooks.connect) after every reset — painful mid-build.
+                bool excelAttached = false;
+                bool hooksAttached = false;
+                string? excelError = null;
+                string? hooksError = null;
+                try
+                {
+                    _staWorker.Invoke(() => { _session.Attach(); return "ok"; }, 5000);
+                    excelAttached = _session.IsAttached;
+                }
+                catch (Exception ex) { excelError = ex.Message; }
+
+                if (excelAttached)
+                {
+                    try
+                    {
+                        // Reconnect pilot hooks pipe if a pilot is still alive.
+                        _hookConnection.TryAutoConnect();
+                        hooksAttached = _hookConnection.IsConnected;
+                    }
+                    catch (Exception ex) { hooksError = ex.Message; }
+                }
+
                 return Response.Ok(new
                 {
                     reset = true,
                     was_stuck = wasStuck,
                     consecutive_timeouts_before_reset = timeouts,
                     filter_registered = _staWorker.FilterRegistered,
-                    hint = "STA thread recycled. Run {\"cmd\":\"connect\"} to reattach.",
+                    attached = excelAttached,
+                    hooks_connected = hooksAttached,
+                    attach_error = excelError,
+                    hooks_error = hooksError,
+                    hint = excelAttached
+                        ? (hooksAttached ? "STA recycled and fully reattached." : "STA recycled and Excel reattached. Hooks not found (no pilot running).")
+                        : "STA recycled but Excel not attached. Launch Excel and run {\"cmd\":\"connect\"}.",
                 });
             }
             catch (Exception ex) { return Response.ErrorFromException(ex, "sta.reset"); }

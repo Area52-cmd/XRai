@@ -268,11 +268,37 @@ builder.Services.AddSingleton(sp =>
             try { session.Detach(); } catch { }
             try { hooks.Disconnect(); } catch { }
             staWorker.Reset();
+
+            // Auto-reattach so the user gets a fully-restored environment in a
+            // single call — saves two follow-up round-trips.
+            bool excelAttached = false;
+            bool hooksAttached = false;
+            string? excelError = null;
+            string? hooksError = null;
+            try
+            {
+                staWorker.Invoke(() => { session.Attach(); return "ok"; }, 5000);
+                excelAttached = session.IsAttached;
+            }
+            catch (Exception ex) { excelError = ex.Message; }
+
+            if (excelAttached)
+            {
+                try { hooks.TryAutoConnect(); hooksAttached = hooks.IsConnected; }
+                catch (Exception ex) { hooksError = ex.Message; }
+            }
+
             return Response.Ok(new
             {
                 reset = true,
                 was_stuck = wasStuck,
-                hint = "STA recycled. Run connect to reattach.",
+                attached = excelAttached,
+                hooks_connected = hooksAttached,
+                attach_error = excelError,
+                hooks_error = hooksError,
+                hint = excelAttached
+                    ? (hooksAttached ? "STA recycled and fully reattached." : "STA recycled; Excel reattached, hooks not found.")
+                    : "STA recycled but Excel not attached — launch Excel and run connect.",
             });
         }
         catch (Exception ex) { return Response.ErrorFromException(ex, "sta.reset"); }

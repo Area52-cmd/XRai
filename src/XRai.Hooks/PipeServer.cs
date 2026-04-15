@@ -1349,13 +1349,37 @@ public class PipeServer
         });
     }
 
-    private string InvokeOnUI(Func<string> action)
+    /// <summary>
+    /// Default budget for a hooks command to complete on the UI thread. If the
+    /// UI dispatcher is blocked (modal open, long binding update, slow COM call)
+    /// beyond this timeout, InvokeOnUI returns a structured XRAI_UI_TIMEOUT
+    /// error instead of hanging the pipe indefinitely. Tuning: pane.screenshot,
+    /// pane.grid.read, and pane.list.read override to 30s internally.
+    /// </summary>
+    public static int DefaultUiTimeoutMs { get; set; } = 8000;
+
+    private string InvokeOnUI(Func<string> action) => InvokeOnUI(action, DefaultUiTimeoutMs);
+
+    private string InvokeOnUI(Func<string> action, int timeoutMs)
     {
         if (_uiDispatcher == null || _uiDispatcher.CheckAccess())
             return action();
 
         string result = "";
-        _uiDispatcher.Invoke(() => result = action());
+        var op = _uiDispatcher.InvokeAsync(() => result = action());
+        if (!op.Task.Wait(timeoutMs))
+        {
+            try { op.Abort(); } catch { }
+            return Serialize(new
+            {
+                ok = false,
+                error = $"UI thread blocked: command did not complete within {timeoutMs}ms. " +
+                        "The pane is likely stuck on a modal, long binding update, or blocking COM call. " +
+                        "Run {\"cmd\":\"sta.reset\"} to recycle, or close any open modal and retry.",
+                code = "XRAI_UI_TIMEOUT",
+                timeout_ms = timeoutMs,
+            });
+        }
         return result;
     }
 
@@ -1365,7 +1389,14 @@ public class PipeServer
             return action();
 
         T result = default!;
-        _uiDispatcher.Invoke(() => result = action());
+        var op = _uiDispatcher.InvokeAsync(() => result = action());
+        if (!op.Task.Wait(DefaultUiTimeoutMs))
+        {
+            try { op.Abort(); } catch { }
+            throw new TimeoutException(
+                $"UI thread blocked: dispatcher did not respond within {DefaultUiTimeoutMs}ms. " +
+                "Run sta.reset to recycle or close any open modal.");
+        }
         return result;
     }
 

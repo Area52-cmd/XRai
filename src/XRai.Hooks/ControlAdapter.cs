@@ -87,7 +87,15 @@ public class ControlAdapter : IControlAdapter, IDisposable
         }
     }
 
-    public ControlAdapter(FrameworkElement element)
+    /// <summary>
+    /// Default ctor: registers DPD value-change subscriptions so Studio sees
+    /// live control state. Use the overload with subscribeToChanges:false for
+    /// ephemeral adapters created during pathed lookups (ControlPathResolver),
+    /// otherwise repeated path clicks leak subscriptions on the target element.
+    /// </summary>
+    public ControlAdapter(FrameworkElement element) : this(element, subscribeToChanges: true) { }
+
+    public ControlAdapter(FrameworkElement element, bool subscribeToChanges)
     {
         _element = element;
         Type = element switch
@@ -114,6 +122,8 @@ public class ControlAdapter : IControlAdapter, IDisposable
             ScrollViewer => "ScrollViewer",
             _ => element.GetType().Name,
         };
+
+        if (!subscribeToChanges) return; // ephemeral: skip DPD subscriptions entirely
 
         // Wire up live-state watchers on the most-relevant dependency
         // properties. DependencyPropertyDescriptor.AddValueChanged gives us
