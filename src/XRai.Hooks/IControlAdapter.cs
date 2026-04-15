@@ -32,7 +32,7 @@ public interface IControlAdapter
     void SelectDataGridRow(int index);
 
     // Tree operations
-    void ExpandTreeNode(string path);
+    void ExpandTreeNode(string path, bool open = true);
 
     // Scroll
     void ScrollTo(double offset);

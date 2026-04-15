@@ -401,11 +401,12 @@ public class WinFormsAdapter : IControlAdapter
 
     // Tree operations
 
-    public void ExpandTreeNode(string path)
+    public void ExpandTreeNode(string path, bool open = true)
     {
         if (_control is not WinTreeView tv) return;
         var parts = path.Split('/');
         var nodes = tv.Nodes;
+        TreeNode? target = null;
         foreach (var part in parts)
         {
             TreeNode? found = null;
@@ -418,8 +419,15 @@ public class WinFormsAdapter : IControlAdapter
                 }
             }
             if (found == null) return;
+            // Intermediate nodes always expand so we can descend; the final
+            // target's state is set by `open` below.
             found.Expand();
             nodes = found.Nodes;
+            target = found;
+        }
+        if (target != null)
+        {
+            if (open) target.Expand(); else target.Collapse();
         }
     }
 

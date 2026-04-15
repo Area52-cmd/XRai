@@ -1019,12 +1019,13 @@ public class PipeServer
     {
         var name = node["name"]?.GetValue<string>() ?? throw new ArgumentException("tree_expand requires 'name'");
         var path = node["path"]?.GetValue<string>() ?? throw new ArgumentException("tree_expand requires 'path'");
+        var open = node["open"]?.GetValue<bool>() ?? true;
         return InvokeOnUI(() =>
         {
             if (!_controls.TryGet(name, out var ctrl))
                 return Serialize(new { ok = false, error = $"Control not found: {name}" });
-            ctrl.ExpandTreeNode(path);
-            return Serialize(new { ok = true, name, expanded_path = path });
+            ctrl.ExpandTreeNode(path, open);
+            return Serialize(new { ok = true, name, expanded_path = path, expanded = open });
         });
     }
 

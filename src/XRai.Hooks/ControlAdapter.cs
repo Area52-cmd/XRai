@@ -722,26 +722,35 @@ public class ControlAdapter : IControlAdapter, IDisposable
     }
 
     // Tree helpers
-    public void ExpandTreeNode(string path)
+    public void ExpandTreeNode(string path, bool open = true)
     {
         if (_element is not TreeView tv) return;
         var parts = path.Split('/');
         ItemsControl current = tv;
+        TreeViewItem? target = null;
 
         foreach (var part in parts)
         {
+            TreeViewItem? found = null;
             for (int i = 0; i < current.Items.Count; i++)
             {
                 var container = current.ItemContainerGenerator.ContainerFromIndex(i) as TreeViewItem;
                 if (container != null && (container.Header?.ToString() == part))
                 {
+                    // Must be expanded to walk deeper; collapse only happens
+                    // on the final target node below.
                     container.IsExpanded = true;
                     container.UpdateLayout();
+                    found = container;
                     current = container;
                     break;
                 }
             }
+            if (found == null) return;
+            target = found;
         }
+
+        if (target != null) target.IsExpanded = open;
     }
 
     // Private helpers

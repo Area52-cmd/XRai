@@ -388,7 +388,13 @@ public class PaneClient
     {
         var control = args["control"]?.GetValue<string>() ?? throw new ArgumentException("requires 'control'");
         var path = args["path"]?.GetValue<string>() ?? throw new ArgumentException("requires 'path'");
-        return Forward("tree_expand", new { name = control, path });
+        // Accept value/open for collapse (pane.tree.expand value=false). Default
+        // is expand (true). Matches the pane.expand convention introduced when
+        // the silent-drop bug on pane.expand was fixed.
+        bool? openFlag = null;
+        if (args.TryGetPropertyValue("value", out var vNode) && vNode is JsonValue vv && vv.TryGetValue<bool>(out var vb)) openFlag = vb;
+        else if (args.TryGetPropertyValue("open", out var oNode) && oNode is JsonValue ov && ov.TryGetValue<bool>(out var ob)) openFlag = ob;
+        return Forward("tree_expand", new { name = control, path, open = openFlag ?? true });
     }
 
     private string HandleTabSelect(JsonObject args)
@@ -419,14 +425,29 @@ public class PaneClient
     private string HandleExpand(JsonObject args)
     {
         var control = args["control"]?.GetValue<string>() ?? throw new ArgumentException("requires 'control'");
-        var open = args["open"]?.GetValue<bool>() ?? true;
+        // Accept 'value' (the canonical convention used by every other pane.*
+        // command) OR the legacy 'open'. Prior versions silently ignored 'value'
+        // and defaulted to open=true, so pane.expand value=false never worked.
+        bool? value = null;
+        if (args.TryGetPropertyValue("value", out var vNode) && vNode is JsonValue vv && vv.TryGetValue<bool>(out var vb)) value = vb;
+        else if (args.TryGetPropertyValue("open", out var oNode) && oNode is JsonValue ov && ov.TryGetValue<bool>(out var ob)) value = ob;
+        var open = value ?? true;
         return Forward("expand", new { name = control, open });
     }
 
     private string HandlePaneWait(JsonObject args)
     {
         var control = args["control"]?.GetValue<string>() ?? throw new ArgumentException("requires 'control'");
-        var value = args["value"]?.GetValue<string>();
+        // value can be any JSON scalar — silently coerced to string so callers can
+        // wait for numeric sliders, boolean checkboxes, etc. without client error.
+        string? value = null;
+        if (args.TryGetPropertyValue("value", out var vNode) && vNode is JsonValue vv)
+        {
+            if (vv.TryGetValue<string>(out var vs)) value = vs;
+            else if (vv.TryGetValue<bool>(out var vb)) value = vb ? "true" : "false";
+            else if (vv.TryGetValue<double>(out var vd)) value = vd.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            else value = vv.ToString();
+        }
         bool? enabled = args["enabled"] is JsonNode en ? en.GetValue<bool>() : null;
         bool? exists = args["exists"] is JsonNode ex ? ex.GetValue<bool>() : null;
         var timeout = args["timeout"]?.GetValue<int>();
