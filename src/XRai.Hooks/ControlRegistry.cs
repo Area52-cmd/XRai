@@ -31,7 +31,21 @@ public class ControlRegistry
 
     public bool TryGet(string name, out IControlAdapter adapter)
     {
-        return _controls.TryGetValue(name, out adapter!);
+        if (_controls.TryGetValue(name, out adapter!)) return true;
+
+        // Pathed lookup: "ItemsControl[0].ChildName", "Grid[key=Id:7].Btn", etc.
+        // Only triggered when the flat dict misses AND the name contains '['.
+        if (!string.IsNullOrEmpty(name) && name.IndexOf('[') >= 0)
+        {
+            if (ControlPathResolver.TryResolve(this, name, out var resolved) && resolved != null)
+            {
+                adapter = resolved;
+                return true;
+            }
+        }
+
+        adapter = null!;
+        return false;
     }
 
     public IEnumerable<KeyValuePair<string, IControlAdapter>> All => _controls;

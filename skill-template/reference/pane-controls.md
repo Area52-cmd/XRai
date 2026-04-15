@@ -86,6 +86,44 @@ Best practice: always add `x:Name` to interactive controls in XAML.
 
 `pane` walks the full visual tree recursively. Controls nested inside UserControls, ContentPresenters, ItemsControls, and DataTemplates are all discovered. Use `pane` output to find the exact name before targeting.
 
+## ItemsControl row addressing (pathed lookups)
+
+Named controls living inside a `DataTemplate` (rows of `ListView`, `ListBox`,
+`DataGrid`, `ItemsControl`) cannot be addressed by a flat `x:Name` because
+WPF generates their containers lazily per-row. XRai resolves them at command
+time from a path:
+
+```
+{ItemsControlName}[index].{ChildName}
+{ItemsControlName}[key=Prop:Value].{ChildName}
+{Outer}[0].{Inner}[2].{Grandchild}    # nests to any depth
+```
+
+- `[index]` — zero-based row index. If the row is virtualized off-screen, the
+  resolver calls `ScrollIntoView` and pumps the dispatcher until the generator
+  materializes the container (up to 500ms).
+- `[key=Prop:Value]` — matches a top-level property on the bound item
+  (e.g. `[key=Symbol:AAPL]` against an item whose `.Symbol == "AAPL"`).
+- Works with every command that takes `control` (`pane.click`, `pane.read`,
+  `pane.type`, `pane.toggle`, `pane.select`, `pane.wait`, etc.).
+
+In the `pane` listing, any ItemsControl entry includes `indexable: true` and
+`item_count: N` so agents know the row count without re-querying.
+
+Examples:
+```json
+{"cmd":"pane.click","control":"TunersListView[0].DiagToggle"}
+{"cmd":"pane.type","control":"RowsGrid[3].NoteBox","value":"hello"}
+{"cmd":"pane.read","control":"Portfolio[key=Symbol:AAPL].PriceText"}
+```
+
+Caveats (v1):
+- Key matching uses top-level reflected properties only; nested `key=A.B:val`
+  is not supported.
+- `TreeView` virtualization has no direct `ScrollIntoView`; only realized
+  nodes are addressable.
+- For `DataGrid` cells that have no `x:Name`, continue to use `pane.grid.*`.
+
 ## Rendered text matching
 
 `pane.read` returns the rendered text of a control — what the user sees on screen. For TextBlocks with bindings, this is the resolved value, not the binding expression.

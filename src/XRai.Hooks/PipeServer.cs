@@ -492,13 +492,28 @@ public class PipeServer
     {
         return InvokeOnUI(() =>
         {
-            var list = _controls.All.Select(kvp => new
+            var list = _controls.All.Select(kvp =>
             {
-                name = kvp.Key,
-                type = kvp.Value.Type,
-                value = kvp.Value.GetValue(),
-                enabled = kvp.Value.IsEnabled,
-                has_command = kvp.Value.HasCommand,
+                // Annotate ItemsControls so agents know they accept pathed
+                // lookups like "Name[0].Child" / "Name[key=Prop:Value].Child".
+                int? itemCount = null;
+                bool indexable = false;
+                if (kvp.Value is ControlAdapter ca && ca.Element is System.Windows.Controls.ItemsControl ic)
+                {
+                    try { itemCount = ic.Items?.Count ?? 0; } catch { }
+                    indexable = true;
+                }
+
+                return new
+                {
+                    name = kvp.Key,
+                    type = kvp.Value.Type,
+                    value = kvp.Value.GetValue(),
+                    enabled = kvp.Value.IsEnabled,
+                    has_command = kvp.Value.HasCommand,
+                    item_count = itemCount,
+                    indexable = indexable,
+                };
             }).ToArray();
 
             return Serialize(new { ok = true, controls = list });

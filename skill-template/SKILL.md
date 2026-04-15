@@ -38,6 +38,50 @@ visibility — the exact problem XRai exists to solve.
 
 ---
 
+## 🔴 MANDATORY FOR GREENFIELD / NEW APPS / NEW ADD-INS
+
+If the user is building something new — a new Excel add-in, WPF app, WinForms
+app, Office add-in, or any desktop app from scratch — you MUST use the XRai
+command surface instead of ad-hoc alternatives. This is the entire pitch:
+Claude Code drives the live app with structured feedback. Going around XRai
+gives the user a worse experience than any other IDE assistant.
+
+**Forbidden during greenfield unless XRai physically cannot do it:**
+
+| ❌ Do NOT use | ✅ Use instead | Why |
+|---|---|---|
+| `dotnet build` in Bash | `{"cmd":"rebuild","project":"..."}` | One shot: kill Excel/app → build → launch → attach → verify |
+| Manual `taskkill /f /im EXCEL.EXE` | `{"cmd":"kill-excel"}` (or `rebuild` which includes it) | Clean shutdown, pipe cleanup |
+| Reading files to guess ViewModel state | `{"cmd":"model"}` | Returns full live state in one call |
+| Screenshots to find a button | `{"cmd":"pane"}` | Returns structured control tree with names |
+| `Thread.Sleep` / arbitrary waits | `{"cmd":"pane.wait","control":"X","timeout":2000}` | Polls, returns fast when ready |
+| One command per pipe round-trip | `{"cmd":"batch","commands":[...]}` | Single stdin call, atomic cost |
+| "Please click the button and tell me what happens" | `pane.click` + `model` + `assert.*` | Machine-verifiable |
+| Eyeballing list rows in screenshots | `"control":"ListName[0].ChildName"` (pathed) | Direct addressing |
+| Print-debug via log output | `{"cmd":"log.read"}` + `{"cmd":"bug-report"}` | Structured, complete |
+| Ad-hoc test scripts | `assert.value`, `assert.enabled`, `assert.contains`, `assert.visible` | Built-in test grammar |
+| Writing code without Studio open | `xrai --studio &` FIRST | User sees every edit + app state live |
+
+**Required greenfield workflow (do these in order, every time):**
+
+1. `xrai set-ide <user's editor>` → `xrai --studio &` → open IDE on the workspace.
+2. Scaffold: `{"cmd":"init","template":"excel-dna"}` (or similar).
+3. Write code with `Pilot.Expose(rootElement)` + `Pilot.ExposeModel(vm)` so every pane/model command works from day one.
+4. Always `{"cmd":"rebuild","project":"..."}` — never raw `dotnet build`.
+5. After rebuild: `{"cmd":"status"}` → `{"cmd":"pane"}` → `{"cmd":"model"}` to confirm the surface is exposed.
+6. Drive the app via `pane.*` / `model.*` / `ribbon.*` commands batched where possible.
+7. Verify with `assert.*` and `screenshot` before declaring a step done.
+8. If anything fails: `{"cmd":"bug-report"}` grabs logs + screenshot + state in one shot for iteration.
+
+**If you catch yourself reaching for `Bash` to build, kill processes, or poke
+at Excel/the app — STOP.** There is an XRai command for it. If there truly
+isn't, that's a gap worth flagging upstream, not routed around.
+
+This rule is what separates XRai-driven dev from "Claude + Bash" dev. Enforce
+it on yourself.
+
+---
+
 ## ⚡ PROACTIVE TRIGGERS — additional context-specific behaviors
 
 The steps above run on EVERY session. These triggers add context-specific
@@ -272,6 +316,21 @@ Alternative: explicit wait in a batch:
   {"cmd":"pane.click","control":"MyButton"}
 ]}
 ```
+
+## Pathed control names (ItemsControl rows)
+
+Controls inside `ListView`, `ListBox`, `DataGrid`, etc. live in a `DataTemplate`
+and have no flat `x:Name`. Address them with a path:
+
+```json
+{"cmd":"pane.click","control":"TunersListView[0].DiagToggle"}
+{"cmd":"pane.read","control":"RowsList[key=Symbol:AAPL].PriceText"}
+{"cmd":"pane.type","control":"OuterList[0].InnerList[2].NameBox","value":"foo"}
+```
+
+- `[index]` — zero-based row index. Virtualized rows are auto-scrolled in.
+- `[key=Prop:Value]` — match a row by an item property (top-level only).
+- Nesting composes to arbitrary depth.
 
 ## Essential commands (the 10 you use most)
 
