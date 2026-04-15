@@ -352,22 +352,12 @@ public class CommandRouter
 
         int batchTimeoutMs = obj["timeout"]?.GetValue<int>() ?? DefaultTimeoutMs;
 
-        // on_error: "continue" (default, legacy) — keep running even when a
-        //   single command returns ok:false. Only taint (STA timeout) aborts.
-        // on_error: "stop" — break on first ok:false so dependent commands
-        //   downstream don't fire against an invalid state.
-        var onError = obj["on_error"]?.GetValue<string>()?.Trim().ToLowerInvariant() ?? "continue";
-        bool stopOnError = onError == "stop";
-
         var results = new JsonArray();
-        bool stopped = false;
-        string? stopReason = null;
         foreach (var cmdNode in commands)
         {
             if (cmdNode is not JsonObject cmdObj)
             {
                 results.Add(JsonNode.Parse(Response.Error("Invalid command in batch", code: ErrorCodes.InvalidArgument)));
-                if (stopOnError) { stopped = true; stopReason = "invalid command object"; break; }
                 continue;
             }
 
@@ -375,34 +365,23 @@ public class CommandRouter
             if (string.IsNullOrEmpty(cmdStr) || !_handlers.TryGetValue(cmdStr, out var handler))
             {
                 results.Add(JsonNode.Parse(Response.Error($"Unknown command: {cmdStr}", code: ErrorCodes.UnknownCommand)));
-                if (stopOnError) { stopped = true; stopReason = $"unknown command: {cmdStr}"; break; }
                 continue;
             }
 
             // Per-command timeout overrides batch timeout
             int cmdTimeout = cmdObj["timeout"]?.GetValue<int>() ?? batchTimeoutMs;
             var result = InvokeWithTimeout(cmdStr, handler, cmdObj, cmdTimeout);
-            var parsedResult = JsonNode.Parse(result);
-            results.Add(parsedResult);
+            results.Add(JsonNode.Parse(result));
 
-            // Taint always aborts — process should exit regardless of on_error.
+            // If we taint mid-batch, abort the rest — process should exit
             if (IsTainted)
             {
                 results.Add(JsonNode.Parse(Response.Error("Batch aborted: previous command timed out, subsequent commands skipped")));
-                stopped = true; stopReason = "tainted";
-                break;
-            }
-
-            // on_error: "stop" — break on first explicit ok:false result.
-            if (stopOnError && parsedResult?["ok"]?.GetValue<bool>() == false)
-            {
-                stopped = true;
-                stopReason = $"{cmdStr} returned ok:false, on_error=stop";
                 break;
             }
         }
 
-        return Response.Ok(new { results, stopped, stop_reason = stopReason, on_error = onError });
+        return Response.Ok(new { results });
     }
 
     /// <summary>

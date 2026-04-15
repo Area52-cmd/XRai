@@ -78,10 +78,7 @@ internal static class ControlPathResolver
         }
 
         if (current == null) return false;
-        // Ephemeral adapter: no DPD subscriptions. Prevents a subscription
-        // leak on the target element when the same path is clicked repeatedly
-        // (every call previously wired permanent AddValueChanged callbacks).
-        adapter = new ControlAdapter(current, subscribeToChanges: false);
+        adapter = new ControlAdapter(current);
         return true;
     }
 

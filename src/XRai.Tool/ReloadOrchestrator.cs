@@ -162,27 +162,14 @@ public class ReloadOrchestrator
                 Step("dotnet-restore", "ok");
             }
 
-            // Step 5: Build. --verbosity normal prints MSBuild diagnostics in
-            // the parseable single-line format so ExtractCompilerErrors can
-            // populate a structured errors[] array in the response. -clp noSummary
-            // keeps the output focused. Errors ALSO need to survive -v quiet, but
-            // normal is safer for downstream parsers.
+            // Step 5: Build
             reporter.Starting("dotnet-build");
-            var buildResult = RunDotnet($"build \"{project}\" -c {config} --nologo --verbosity normal -clp:NoSummary");
+            var buildResult = RunDotnet($"build \"{project}\" -c {config} --nologo --verbosity quiet");
             if (buildResult.ExitCode != 0)
             {
                 Step("dotnet-build", "error", $"exit {buildResult.ExitCode}");
-                var combined = buildResult.Stdout + "\n" + buildResult.Stderr;
-                var errors = ExtractCompilerErrors(combined);
-                // Include raw tail (last 40 lines) so callers can see MSBuild
-                // noise that didn't match the structured error regex.
-                var lines = combined.Split('\n');
-                var tail = string.Join("\n", lines.Skip(Math.Max(0, lines.Length - 40)));
-                return Response.ErrorWithData(
-                    errors.Length > 0
-                        ? $"Build failed: {errors.Length} compiler error(s). First: {((dynamic)errors[0]).message}"
-                        : $"Build failed (exit code {buildResult.ExitCode}).",
-                    data: new { exit_code = buildResult.ExitCode, errors, raw_tail = tail },
+                return Response.Error($"Build failed (exit code {buildResult.ExitCode}). " +
+                    $"stderr: {buildResult.Stderr.Trim()}. stdout: {buildResult.Stdout.Trim()}",
                     code: ErrorCodes.BuildFailed);
             }
             Step("dotnet-build", "ok");
@@ -195,15 +182,8 @@ public class ReloadOrchestrator
             }
             else
             {
-                // Auto-discover: look for *-AddIn64-packed.xll in publish output.
-                // Selection rules (most-reliable → least):
-                //   1. Prefer a file whose basename matches {csproj-name}-AddIn64-packed.xll
-                //      (handles stale .xlls from a renamed project).
-                //   2. Otherwise pick the file with the most-recent LastWriteTime
-                //      (the one we just built).
-                //   3. If multiple candidates are within 10s of each other, warn.
+                // Auto-discover: look for *-AddIn64-packed.xll in publish output
                 var projectDir = Path.GetDirectoryName(Path.GetFullPath(project))!;
-                var csprojName = Path.GetFileNameWithoutExtension(project);
                 var publishDir = Path.Combine(projectDir, "bin", config, "net8.0-windows", "publish");
                 var candidates = Directory.Exists(publishDir)
                     ? Directory.GetFiles(publishDir, "*-AddIn64-packed.xll")
@@ -211,6 +191,7 @@ public class ReloadOrchestrator
 
                 if (candidates.Length == 0)
                 {
+                    // Fall back to non-packed 64-bit
                     var binDir = Path.Combine(projectDir, "bin", config, "net8.0-windows");
                     candidates = Directory.Exists(binDir)
                         ? Directory.GetFiles(binDir, "*-AddIn64.xll")
@@ -221,34 +202,7 @@ public class ReloadOrchestrator
                     return Response.Error("Build succeeded but no .xll found. " +
                         "Pass \"xll\":\"path/to/file.xll\" explicitly.");
 
-                // Prefer csproj-name match.
-                var expected = $"{csprojName}-AddIn64-packed.xll";
-                var nameMatch = candidates.FirstOrDefault(p =>
-                    string.Equals(Path.GetFileName(p), expected, StringComparison.OrdinalIgnoreCase));
-
-                if (nameMatch != null)
-                {
-                    xllPath = nameMatch;
-                }
-                else
-                {
-                    // Freshest-first by LastWriteTime.
-                    var sorted = candidates
-                        .Select(p => new { Path = p, Mtime = File.GetLastWriteTimeUtc(p) })
-                        .OrderByDescending(x => x.Mtime)
-                        .ToArray();
-
-                    xllPath = sorted[0].Path;
-
-                    if (sorted.Length > 1)
-                    {
-                        var gapSec = (sorted[0].Mtime - sorted[1].Mtime).TotalSeconds;
-                        if (gapSec < 10)
-                            Step("xll-resolve", "warning",
-                                $"multiple .xll candidates within 10s ({sorted.Length}): picked '{Path.GetFileName(xllPath)}'. " +
-                                $"Pass \"xll\" explicitly to disambiguate.");
-                    }
-                }
+                xllPath = candidates[0];
             }
 
             if (!File.Exists(xllPath))
@@ -465,79 +419,21 @@ public class ReloadOrchestrator
 
     private record DotnetResult(int ExitCode, string Stdout, string Stderr);
 
-    /// <summary>
-    /// Runs a dotnet command, draining stdout+stderr asynchronously so the child
-    /// never stalls on a full pipe buffer (default 4KB on Windows). The previous
-    /// implementation called WaitForExit BEFORE reading the streams, which
-    /// deadlocked whenever a build produced >4KB of compiler errors — the child
-    /// blocked writing to stderr and we hit the 120s hard timeout returning
-    /// truncated output. Now: BeginOutputReadLine + BeginErrorReadLine drain
-    /// continuously into StringBuilders while WaitForExit blocks on exit only.
-    /// </summary>
     private static DotnetResult RunDotnet(string arguments, bool ignoreExit = false)
     {
-        var proc = new Process
+        var proc = Process.Start(new ProcessStartInfo
         {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = "dotnet",
-                Arguments = arguments,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            }
-        };
-
-        var stdout = new System.Text.StringBuilder();
-        var stderr = new System.Text.StringBuilder();
-        proc.OutputDataReceived += (_, e) => { if (e.Data != null) lock (stdout) stdout.AppendLine(e.Data); };
-        proc.ErrorDataReceived  += (_, e) => { if (e.Data != null) lock (stderr) stderr.AppendLine(e.Data); };
-
-        proc.Start();
-        proc.BeginOutputReadLine();
-        proc.BeginErrorReadLine();
-
-        // Hard cap keeps us from hanging forever if dotnet itself is wedged.
-        if (!proc.WaitForExit(600_000))
-        {
-            try { proc.Kill(entireProcessTree: true); } catch { }
-            return new DotnetResult(-1, stdout.ToString(), stderr.ToString() + "\n[xrai] dotnet exceeded 10 min timeout, killed.");
-        }
-        // Flush trailing async output after exit.
-        proc.WaitForExit();
-
-        return new DotnetResult(proc.ExitCode, stdout.ToString(), stderr.ToString());
-    }
-
-    /// <summary>
-    /// Parse dotnet build output (from MSBuild at -v normal or higher) into a
-    /// structured array of compiler errors. Returns empty when the build was
-    /// clean. Format matches the MSBuild single-line diagnostic:
-    ///   Foo.cs(42,13): error CS0103: The name 'bar' does not exist...
-    /// </summary>
-    public static object[] ExtractCompilerErrors(string output)
-    {
-        if (string.IsNullOrEmpty(output)) return Array.Empty<object>();
-        var rx = new System.Text.RegularExpressions.Regex(
-            @"^(?<file>[^()]+?)\((?<line>\d+),(?<col>\d+)\):\s+(?<sev>error|warning)\s+(?<code>[A-Z]+\d+):\s+(?<msg>.+?)(?:\s+\[[^\]]+\])?$",
-            System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.Compiled);
-        var seen = new HashSet<string>();
-        var list = new List<object>();
-        foreach (System.Text.RegularExpressions.Match m in rx.Matches(output))
-        {
-            if (m.Groups["sev"].Value != "error") continue;
-            var key = $"{m.Groups["file"].Value}|{m.Groups["line"].Value}|{m.Groups["code"].Value}";
-            if (!seen.Add(key)) continue; // dedupe (MSBuild repeats errors per project)
-            list.Add(new
-            {
-                file = m.Groups["file"].Value.Trim(),
-                line = int.Parse(m.Groups["line"].Value),
-                col = int.Parse(m.Groups["col"].Value),
-                code = m.Groups["code"].Value,
-                message = m.Groups["msg"].Value.Trim(),
-            });
-        }
-        return list.ToArray();
+            FileName = "dotnet",
+            Arguments = arguments,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        });
+        proc!.WaitForExit(120000);
+        return new DotnetResult(
+            proc.ExitCode,
+            proc.StandardOutput.ReadToEnd(),
+            proc.StandardError.ReadToEnd());
     }
 }
