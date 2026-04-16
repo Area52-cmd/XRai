@@ -265,7 +265,11 @@ public sealed class StudioHost : IDisposable
                     {
                         try
                         {
-                            var fullPath = Path.GetFullPath(filePath);
+                            // Same multi-encoding resolution as IdeLauncher.Open
+                            // so the line-search works on POSIX-style, relative,
+                            // and tilde paths too (not just Windows-native).
+                            var _scratch = new List<string>();
+                            var fullPath = IdeLauncher.TryResolveForSearch(filePath, _scratch) ?? Path.GetFullPath(filePath);
                             if (File.Exists(fullPath))
                             {
                                 var content = File.ReadAllText(fullPath);

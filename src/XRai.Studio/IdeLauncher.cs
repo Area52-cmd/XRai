@@ -210,15 +210,29 @@ public static class IdeLauncher
             return new JsonObject { ["ok"] = false, ["error"] = "file_path is required" };
         }
 
-        filePath = Path.GetFullPath(filePath);
-        if (!File.Exists(filePath))
+        // Try multiple path normalizations. The transcript may store paths in
+        // any of these forms depending on how Claude Code was invoked:
+        //   Windows native:  D:\Code\Xrai\foo.cs
+        //   Forward slashes: D:/Code/Xrai/foo.cs
+        //   Git-bash POSIX:  /d/Code/Xrai/foo.cs
+        //   Tilde home:      ~/projects/...
+        //   Relative:        src/foo.cs (against daemon CWD)
+        // We try each until one exists. Previously we called Path.GetFullPath +
+        // File.Exists once, returning "File does not exist" the moment any of
+        // those alternate encodings came through, even when the file was really
+        // there.
+        var tried = new List<string>();
+        string? resolved = ResolveFilePath(filePath, tried);
+        if (resolved == null)
         {
             return new JsonObject
             {
                 ["ok"] = false,
-                ["error"] = $"File does not exist: {filePath}",
+                ["error"] = $"File not found. Tried: {string.Join(" ; ", tried)}",
+                ["attempted_paths"] = new JsonArray(tried.Select(t => (JsonNode?)t).ToArray()),
             };
         }
+        filePath = resolved;
 
         var all = DetectAll();
 
@@ -586,5 +600,66 @@ public static class IdeLauncher
                 ["filePath"] = filePath,
             };
         }
+    }
+
+    /// <summary>
+    /// Public wrapper around the internal path-resolver for callers outside
+    /// this class (StudioHost's searchText line-lookup).
+    /// </summary>
+    public static string? TryResolveForSearch(string input, List<string> tried)
+        => ResolveFilePath(input, tried);
+
+    /// <summary>
+    /// Try the common path encodings until one resolves. Returns the Windows-
+    /// native absolute path if any variant exists, otherwise null. `tried`
+    /// collects each attempted resolution for the error response so the user
+    /// can see what paths we checked.
+    /// </summary>
+    private static string? ResolveFilePath(string input, List<string> tried)
+    {
+        var candidates = new List<string>();
+
+        // 1. As-given.
+        candidates.Add(input);
+
+        // 2. Forward-slash → backslash.
+        if (input.Contains('/'))
+            candidates.Add(input.Replace('/', '\\'));
+
+        // 3. Git-bash POSIX form: /d/Code/... → D:\Code\...
+        //    Pattern: leading / + single drive letter + / + rest.
+        if (input.Length >= 4 && input[0] == '/' && char.IsLetter(input[1]) &&
+            (input[2] == '/' || input[2] == '\\'))
+        {
+            candidates.Add(char.ToUpperInvariant(input[1]) + ":" +
+                           input.Substring(2).Replace('/', '\\'));
+        }
+
+        // 4. Tilde home expansion.
+        if (input.StartsWith("~"))
+        {
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            candidates.Add(Path.Combine(home, input.TrimStart('~').TrimStart('/', '\\')));
+        }
+
+        // 5. Relative → resolved against daemon CWD (Path.GetFullPath default).
+        //    Only for paths that aren't already absolute.
+        if (!Path.IsPathRooted(input))
+        {
+            try { candidates.Add(Path.GetFullPath(input)); } catch { }
+        }
+
+        foreach (var c in candidates)
+        {
+            string resolved;
+            try { resolved = Path.GetFullPath(c); }
+            catch { tried.Add($"{c} (invalid)"); continue; }
+
+            tried.Add(resolved);
+            try { if (File.Exists(resolved)) return resolved; }
+            catch { /* path too long / access denied — treat as not found */ }
+        }
+
+        return null;
     }
 }
