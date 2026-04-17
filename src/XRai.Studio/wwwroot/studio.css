@@ -583,6 +583,36 @@ body.resizing-row * { cursor: row-resize !important; user-select: none; }
 .agent-item .tool-detail .diff-line-del { color: var(--bad); display: block; }
 .agent-item .tool-detail .diff-line-ctx { color: var(--text-dim); display: block; }
 
+/* Hidden overflow lines revealed by the "… N more" toggle. */
+.agent-item .tool-detail .diff-hidden { display: block; }
+.agent-item .tool-detail .diff-hidden[hidden] { display: none; }
+
+/* "… N more (click to expand)" toggle button — looks like an inline hint,
+   acts like a button. Clearly clickable so non-coders notice it. */
+.agent-item .tool-detail .diff-expand {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-top: 1px dashed var(--border);
+  margin-top: 4px;
+  padding: 4px 2px;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.1s;
+}
+.agent-item .tool-detail .diff-expand:hover {
+  background: rgba(255,255,255,0.04);
+  color: var(--text);
+}
+.agent-item .tool-detail .diff-expand.expanded {
+  color: var(--text-dim);
+}
+
 .agent-item .tool-detail .open-hint {
   position: absolute;
   top: 6px;

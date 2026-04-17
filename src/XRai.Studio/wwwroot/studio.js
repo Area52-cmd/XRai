@@ -784,11 +784,30 @@ function onAgentToolUse(data) {
   // Click → open file in IDE at the exact edit location
   const clickable = item.querySelector(".tool-detail.clickable");
   if (clickable && detail.filePath) {
-    clickable.addEventListener("click", () => {
+    clickable.addEventListener("click", (e) => {
+      // Don't trigger IDE-open when the user clicked on the "... N more"
+      // expand toggle or any hidden-lines span it exposes.
+      if (e.target.closest(".diff-expand, .diff-hidden")) return;
       // Pass oldString as searchText so the server finds the exact line
       openFileInIde(detail.filePath, detail.line, detail.oldString || detail.newString);
     });
   }
+
+  // "… N more" toggle — reveal/collapse the rest of the diff in place.
+  // Listener is per-button because each agent-item has its own instance.
+  item.querySelectorAll(".diff-expand").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const hidden = btn.previousElementSibling;
+      if (!hidden || !hidden.classList.contains("diff-hidden")) return;
+      const isExpanded = btn.classList.toggle("expanded");
+      hidden.hidden = !isExpanded;
+      btn.textContent = isExpanded
+        ? btn.dataset.expandedLabel
+        : btn.dataset.collapsedLabel;
+    });
+  });
 
   // Route build-related Bash commands to the Build Progress panel too
   if ((toolName || "").toLowerCase() === "bash" && data?.command) {
@@ -946,31 +965,39 @@ function buildToolDetail(data) {
   return detail;
 }
 
+// Render up to `limit` lines of the given array with `cls`, then a toggle
+// "… N more" button that reveals the rest when clicked. Click toggles
+// back to collapsed. Clicks on the toggle are intercepted so they don't
+// also fire the parent card's open-in-IDE handler.
+function renderExpandableLines(lines, cls, limit) {
+  const prefix = (cls === "diff-line-del") ? "- " :
+                 (cls === "diff-line-add") ? "+ " : "";
+  const renderLine = l => `<span class="${cls}">${escapeHtml(prefix + l)}</span>`;
+
+  if (lines.length <= limit) {
+    return lines.map(renderLine).join("");
+  }
+  const visible = lines.slice(0, limit).map(renderLine).join("");
+  const hidden = lines.slice(limit).map(renderLine).join("");
+  const moreCount = lines.length - limit;
+  return `${visible}<span class="diff-hidden" hidden>${hidden}</span>` +
+         `<button type="button" class="diff-expand" ` +
+         `data-collapsed-label="… ${moreCount} more (click to expand)" ` +
+         `data-expanded-label="▲ collapse">… ${moreCount} more (click to expand)</button>`;
+}
+
 function renderInlineDiff(oldStr, newStr) {
   const oldLines = (oldStr || "").split("\n");
   const newLines = (newStr || "").split("\n");
   const maxPreview = 8;
-  const parts = [];
-  for (let i = 0; i < Math.min(oldLines.length, maxPreview); i++) {
-    parts.push(`<span class="diff-line-del">- ${escapeHtml(oldLines[i])}</span>`);
-  }
-  if (oldLines.length > maxPreview) parts.push(`<span class="diff-line-ctx">  … ${oldLines.length - maxPreview} more</span>`);
-  for (let i = 0; i < Math.min(newLines.length, maxPreview); i++) {
-    parts.push(`<span class="diff-line-add">+ ${escapeHtml(newLines[i])}</span>`);
-  }
-  if (newLines.length > maxPreview) parts.push(`<span class="diff-line-ctx">  … ${newLines.length - maxPreview} more</span>`);
-  return parts.join("");
+  return renderExpandableLines(oldLines, "diff-line-del", maxPreview) +
+         renderExpandableLines(newLines, "diff-line-add", maxPreview);
 }
 
 function renderInlineContent(content) {
   const lines = (content || "").split("\n");
   const maxPreview = 10;
-  const parts = [];
-  for (let i = 0; i < Math.min(lines.length, maxPreview); i++) {
-    parts.push(`<span class="diff-line-add">+ ${escapeHtml(lines[i])}</span>`);
-  }
-  if (lines.length > maxPreview) parts.push(`<span class="diff-line-ctx">  … ${lines.length - maxPreview} more</span>`);
-  return parts.join("");
+  return renderExpandableLines(lines, "diff-line-add", maxPreview);
 }
 
 function onAgentToolResult(data) {
