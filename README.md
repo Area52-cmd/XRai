@@ -5,7 +5,7 @@
 
 ## What is XRai?
 
-XRai is a development kit that lets AI coding agents (Claude Code, Codex, Cursor, Windsurf) programmatically control live Windows desktop applications. It provides 283 commands for:
+XRai is a development kit that lets AI coding agents (Claude Code, Codex, Cursor, Windsurf) programmatically control live Windows desktop applications. It provides 288+ commands for:
 
 - **Excel automation** -- cells, formulas, charts, tables, pivots, Power Query, DAX, slicers, VBA, conditional formatting, data validation, sparklines, shapes, print layout
 - **Task pane control** -- click buttons, type in TextBoxes, read DataGrids, select ListBox items, expand ComboBox dropdowns, toggle checkboxes, switch tabs -- via in-process WPF and WinForms hooks
@@ -91,7 +91,7 @@ XRai.Tool.exe (CLI)
                   Excel / Any Windows App
 ```
 
-## 283 Commands
+## 288+ Commands
 
 Full command catalog: [docs/commands.md](docs/commands.md)
 
@@ -130,7 +130,7 @@ Full command catalog: [docs/commands.md](docs/commands.md)
 ## Documentation
 
 - [Getting Started Guide](docs/getting-started.md)
-- [Command Reference (283 commands)](docs/commands.md)
+- [Command Reference (288+ commands)](docs/commands.md)
 - [Task Pane & ViewModel Guide](docs/pane-controls.md)
 - [Dialog & Folder Picker Guide](docs/dialogs.md)
 - [Testing & Assertions Guide](docs/testing.md)
