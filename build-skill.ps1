@@ -78,11 +78,14 @@ Copy-Item "$binDir/*" "$skillDir/bin/" -Recurse -Force
 # Copy NuGet package
 Copy-Item $nupkgFile.FullName "$skillDir/packages/" -Force
 
-# Copy SKILL.md, docs, reference, and templates from skill-template
+# Copy SKILL.md, docs, reference, templates, and setup script from skill-template
 Copy-Item "skill-template/SKILL.md" "$skillDir/SKILL.md" -Force
 Copy-Item "skill-template/docs/*" "$skillDir/docs/" -Recurse -Force
 Copy-Item "skill-template/reference/*" "$skillDir/reference/" -Recurse -Force
 Copy-Item "skill-template/templates/*" "$skillDir/templates/" -Recurse -Force
+if (Test-Path "skill-template/setup.ps1") {
+    Copy-Item "skill-template/setup.ps1" "$skillDir/setup.ps1" -Force
+}
 
 # Auto-generate commands.md from the freshly built binary so docs are never stale.
 # This replaces the hand-written skill-template/docs/commands.md copy.

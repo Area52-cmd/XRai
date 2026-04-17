@@ -6,35 +6,56 @@ allowed-tools: Bash, Read, Edit, Write, Glob, Grep
 
 # XRai — AI-Native Windows Desktop Development Kit
 
-## 🔴 MANDATORY: Launch Studio + IDE at the START of EVERY session
+## 🔴 MANDATORY: Open the full workspace BEFORE writing any code
 
-This is NOT optional. This is the entire purpose of XRai. On EVERY session
-where this skill is loaded — greenfield, existing project, debugging,
-reviewing, refactoring, ANY desktop dev work — do these steps FIRST before
-writing a single line of code:
+This is NOT optional. The user EXPECTS to see three windows on their screen
+from the moment you start working:
 
-1. **Check if the user's IDE preference is set:**
-   ```bash
-   xrai get-ide
-   ```
-   If `preferredIde: (not set)`, ASK the user and run `xrai set-ide <choice>`.
+1. **Their IDE** (VS Code / Visual Studio / Rider) — showing every file you edit live
+2. **Excel** (or the target desktop app) — showing the running application
+3. **XRai Studio** (browser dashboard) — showing screenshots, commands, build progress
 
-2. **Launch the user's IDE** if not already running:
-   - VS Code: `code .`
-   - VS 2026: `devenv .` (or the solution file once known)
-   - Rider: `rider64 .`
+If ANY of these are missing, the user has no visibility into what you're doing.
+That's the exact problem XRai exists to solve. **Do these steps FIRST, before
+writing a single line of code, on EVERY session:**
 
-3. **Launch XRai Studio** in the background:
-   ```bash
-   xrai --studio &
-   ```
+### Step 1: Ensure the IDE is open
+```bash
+xrai get-ide
+```
+If `preferredIde: (not set)`, ASK the user: *"Which editor? VS Code, Visual Studio, or Rider?"*
+Then persist: `xrai set-ide VSCode` (or VisualStudio / Rider).
 
-4. **ONLY NOW** start reading code, writing files, or running commands.
+Launch it if not running:
+- VS Code: `code .`
+- Visual Studio: `devenv .`
+- Rider: `rider64 .`
 
-The user's expectation is: *"I see every edit you make, live, in my IDE,
-with the target app updating alongside in the Studio dashboard."* If you
-skip steps 1-3, the user gets a terminal-only experience with no live
-visibility — the exact problem XRai exists to solve.
+### Step 2: Launch XRai Studio (may already be running via SessionStart hook)
+```bash
+xrai --studio &
+```
+Tell the user: *"Studio is open in your browser — you'll see every edit and
+command live."*
+
+### Step 3: If this is an Excel/desktop project, get the app running
+- **Existing project with a .csproj**: `{"cmd":"rebuild","project":"path/to/project.csproj"}`
+- **Greenfield**: scaffold first, THEN rebuild
+- **Already running**: `{"cmd":"connect"}` or `{"cmd":"status"}` to verify
+
+### Step 4: Confirm visibility
+```bash
+xrai status
+```
+Tell the user what's connected: *"VS Code open, Excel attached (pid 12345),
+hooks connected, Studio running. You should see everything live now."*
+
+### ONLY NOW start writing code.
+
+The user's expectation: *"I see my IDE, I see Excel, I see the Studio dashboard,
+and every change you make appears across all three in real time."* If you skip
+these steps, they get a terminal-only experience with zero visibility — the
+exact opposite of what XRai promises.
 
 ---
 
