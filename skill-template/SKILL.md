@@ -1,6 +1,9 @@
 ---
 name: xrai-excel
-description: Drives live Windows desktop apps (Excel, WPF, WinForms, Office add-ins) via 288 structured JSON commands. Provides XRai Studio live dashboard, IDE follow-mode, task pane introspection, ViewModel binding, screenshots, and testing assertions.
+description: |
+  Build, scaffold, and drive Excel add-ins (Excel-DNA/.xll/VSTO), WPF, and WinForms desktop apps end-to-end. The agent scaffolds the project, builds, launches Excel, connects hooks, drives task panes/ribbons/cells/ViewModels, and verifies via screenshots and assertions. 288+ structured JSON commands, live XRai Studio browser dashboard, IDE follow-mode.
+  TRIGGER when: user says "build/create/make/scaffold" with "Excel add-in", "Excel task pane", "Excel-DNA", "VSTO", "WPF app", "WinForms app", "Windows desktop app", or "Office add-in"; project contains *.xll, ExcelDna.AddIn, Pilot.Expose, ExcelDnaUtil, or XRai.Hooks; questions about driving/automating/testing/inspecting a running Excel/WPF/WinForms app; Excel automation against a running Excel instance (cells, charts, pivots, ribbon, dialogs, pane controls, ViewModel).
+  SKIP: Office Web Add-ins (manifest.xml + Office.js + webpack), cross-platform Office JavaScript API, Python openpyxl/pandas/xlsxwriter, Google Sheets API, server-side xlsx generation, macOS/Linux targets.
 allowed-tools: Bash, Read, Edit, Write, Glob, Grep
 ---
 
