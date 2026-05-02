@@ -146,3 +146,31 @@ Both `keys` (canonical) and `key` (alias) work:
 {"cmd":"pane.key","control":"InputBox","keys":"Enter"}
 {"cmd":"pane.key","control":"InputBox","key":"Enter"}
 ```
+
+## Add-in teardown ordering (Pilot.Stop FIRST)
+
+In your `IExcelAddIn.AutoClose()` (or equivalent shutdown path), call
+`Pilot.Stop()` BEFORE disposing any `FrameworkElement` you previously
+passed to `Pilot.Expose()`. Recommended ordering:
+
+```csharp
+public void AutoClose()
+{
+    // 1. Drop XRai listeners first — no callbacks can fire after this.
+    Pilot.Stop();
+
+    // 2. Detach WPF child from the ElementHost on the UI thread.
+    elementHost.Dispatcher.Invoke(() => elementHost.Child = null);
+
+    // 3. Tear down the host + CTP.
+    elementHost.Dispose();
+    customTaskPane.Delete();
+}
+```
+
+XRai 0.9.1+ also auto-detaches its `DependencyPropertyDescriptor`
+subscriptions when the exposed element raises `Unloaded` or its
+`Dispatcher` raises `ShutdownStarted`, so even consumer code that
+disposes UI before calling `Pilot.Stop()` will not crash. Following
+the explicit ordering above is still preferred — it's deterministic
+and one less moving part to debug.

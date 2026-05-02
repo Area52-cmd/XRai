@@ -125,6 +125,32 @@ public class ControlAdapter : IControlAdapter, IDisposable
 
         if (!subscribeToChanges) return; // ephemeral: skip DPD subscriptions entirely
 
+        // Defensive teardown: when the element gets unloaded from the visual
+        // tree (typical mid-AutoClose: ElementHost.Dispose → child release)
+        // we eagerly Dispose ourselves so the next phase of WPF teardown
+        // never fires a value-changed notification into a handler that
+        // touches the half-disposed element. This makes Pilot tolerant of
+        // consumer code that disposes UI BEFORE calling Pilot.Stop().
+        // Reported: the wrong ordering used to escalate to InvalidProgramException
+        // / FailFast in some host configurations (Office CTP + ElementHost +
+        // WPF UserControl on .NET 8 desktop runtime).
+        _element.Unloaded += OnElementUnloaded;
+        _unsubscribers.Add(() => { try { _element.Unloaded -= OnElementUnloaded; } catch { } });
+
+        // Same insurance against the dispatcher itself shutting down — covers
+        // the case where the WPF Window/dispatcher is going down before the
+        // element raises Unloaded (e.g. AppDomain unload during DeInit).
+        try
+        {
+            var disp = _element.Dispatcher;
+            if (disp != null)
+            {
+                disp.ShutdownStarted += OnDispatcherShutdown;
+                _unsubscribers.Add(() => { try { disp.ShutdownStarted -= OnDispatcherShutdown; } catch { } });
+            }
+        }
+        catch { /* dispatcher already gone */ }
+
         // Wire up live-state watchers on the most-relevant dependency
         // properties. DependencyPropertyDescriptor.AddValueChanged gives us
         // change notifications even when there's no data binding. Only fires
@@ -188,6 +214,15 @@ public class ControlAdapter : IControlAdapter, IDisposable
         }
         _unsubscribers.Clear();
     }
+
+    /// <summary>
+    /// Triggered when the element leaves the visual tree. We immediately
+    /// drop every subscription so subsequent WPF teardown notifications
+    /// never re-enter our handler on a half-disposed element.
+    /// </summary>
+    private void OnElementUnloaded(object? sender, RoutedEventArgs e) => Dispose();
+
+    private void OnDispatcherShutdown(object? sender, EventArgs e) => Dispose();
 
     public string? GetValue()
     {
