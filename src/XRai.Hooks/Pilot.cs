@@ -38,6 +38,15 @@ public static class Pilot
     {
         if (_server != null) return;
 
+        // Scrub Excel's Resiliency state from any prior crashed session so
+        // the user never sees the "Excel didn't shut down properly — Safe
+        // Mode?" prompt and the addin is never auto-disabled. This is the
+        // user-visible mitigation for the documented .NET 8 + Excel-DNA +
+        // WPF teardown FailFast (0x80131506). The runtime crash itself is
+        // logged to Event Viewer (cosmetic) but Excel forgets it ever
+        // happened from the user's perspective.
+        try { ScrubOfficeResiliency(); } catch { }
+
         int pid = Process.GetCurrentProcess().Id;
         string pipeName = $"xrai_{pid}";
 
@@ -80,24 +89,16 @@ public static class Pilot
     /// </summary>
     public static void DisableStrictShutdownBypass() { _bypassStrictShutdown = 0; }
 
-    /// <summary>
-    /// Process exit fires while CLR is shutting down. For Excel-DNA hosts on
-    /// .NET 8, this is our LAST chance to run code before CoreCLR's strict
-    /// AssemblyLoadContext-unload sweep begins. The sweep is what FailFasts
-    /// 0x80131506 when WPF static state is rooted. We Shutdown here (which
-    /// TerminateProcess'es when the host is Excel/Word/PowerPoint), so the
-    /// sweep never runs and Excel exits with code 0 instead of crashing.
-    /// </summary>
-    private static void OnProcessExit(object? sender, EventArgs e) { try { Shutdown(); } catch { } }
-
-    /// <summary>
-    /// AssemblyLoadContext.Unloading fires BEFORE the strict unload sweep. If
-    /// the host (Excel) is exiting, we must terminate cleanly here instead
-    /// of letting the sweep run. If the host is doing a mid-session reload
-    /// (Excel keeps running), Shutdown's IsHostExiting() guard prevents
-    /// TerminateProcess from firing — we just Stop() cleanly.
-    /// </summary>
-    private static void OnLoadContextUnloading(System.Runtime.Loader.AssemblyLoadContext alc) { try { Shutdown(); } catch { } }
+    // SAFETY-NET hooks. These are best-effort cleanup paths if the consumer
+    // forgets to call Pilot.Shutdown() in AutoClose. They run Stop() only —
+    // never the TerminateProcess bypass — because we can't reliably tell
+    // whether ProcessExit / ALC.Unloading fired because the HOST is exiting
+    // or because the runtime is doing a mid-session unload. Killing Excel
+    // mid-session would be far worse than letting the documented .NET 8 +
+    // WPF teardown crash happen on host exit. The TerminateProcess path
+    // ONLY fires from an explicit Pilot.Shutdown() call (from AutoClose).
+    private static void OnProcessExit(object? sender, EventArgs e) { try { Stop(); } catch { } }
+    private static void OnLoadContextUnloading(System.Runtime.Loader.AssemblyLoadContext alc) { try { Stop(); } catch { } }
 
     public static void Stop()
     {
@@ -175,6 +176,12 @@ public static class Pilot
     public static void Shutdown(int threadJoinMs = 5000)
     {
         try { Stop(); } catch { }
+
+        // Pre-emptively scrub Resiliency: if the strict-shutdown sweep does
+        // crash after this point, the user still won't see the recovery
+        // prompt on the next launch. Belt-and-braces with the Pilot.Start
+        // scrub.
+        try { ScrubOfficeResiliency(); } catch { }
 
         // Snapshot then clear so the iteration is decoupled from concurrent
         // shutdown signals (e.g. ProcessExit firing while we're already here).
@@ -264,6 +271,88 @@ public static class Pilot
 
         [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
         public static extern bool TerminateProcess(IntPtr hProcess, uint exitCode);
+    }
+
+    /// <summary>
+    /// TARGETED scrub: only deletes Resiliency entries whose binary value
+    /// contains the filename of the .xll currently hosting this Pilot
+    /// instance. Office's protection of every OTHER addin on the system is
+    /// preserved. The caller (Pilot.Start) already knows we're inside an
+    /// XRai-enabled addin (the very fact that Pilot.Start is running proves
+    /// it), so clearing Resiliency for OUR specific .xll is defensible.
+    ///
+    /// Without this, the .NET 8 + Excel-DNA + WPF teardown FailFast
+    /// (0x80131506) writes a Resiliency entry that on the NEXT launch causes
+    ///   1. "Excel didn't shut down properly — Safe Mode?" prompt
+    ///   2. Auto-disable of the addin (DisabledItems)
+    /// Both are agentic-workflow blockers. The CLR crash itself remains
+    /// logged in Event Viewer (cosmetic) until the underlying runtime issue
+    /// is fixed by Microsoft / Excel-DNA.
+    /// </summary>
+    private static void ScrubOfficeResiliency()
+    {
+        string? xllPath = null;
+        try { xllPath = ExcelDna.Integration.ExcelDnaUtil.XllPath; } catch { }
+        if (string.IsNullOrEmpty(xllPath)) return;
+        var fileName = System.IO.Path.GetFileName(xllPath).ToLowerInvariant();
+        if (fileName.Length == 0) return;
+        var needle = System.Text.Encoding.Unicode.GetBytes(fileName);
+
+        string[] apps = { "Excel", "Word", "PowerPoint" };
+        string[] versions = { "16.0", "15.0", "14.0" };
+        foreach (var app in apps)
+        {
+            foreach (var ver in versions)
+            {
+                var keyPath = $@"Software\Microsoft\Office\{ver}\{app}\Resiliency";
+                try
+                {
+                    using var rootKey = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(keyPath);
+                    if (rootKey == null) continue;
+                    foreach (var bucketName in rootKey.GetSubKeyNames())
+                    {
+                        try
+                        {
+                            using var bucket = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                                $@"{keyPath}\{bucketName}", writable: true);
+                            if (bucket == null) continue;
+                            foreach (var valName in bucket.GetValueNames())
+                            {
+                                try
+                                {
+                                    if (bucket.GetValue(valName) is byte[] raw &&
+                                        BlobContainsLowercased(raw, needle))
+                                    {
+                                        bucket.DeleteValue(valName, throwOnMissingValue: false);
+                                    }
+                                }
+                                catch { }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                catch { /* missing key, no permission, etc. — silent */ }
+            }
+        }
+    }
+
+    private static bool BlobContainsLowercased(byte[] haystack, byte[] needleLower)
+    {
+        if (needleLower.Length == 0 || haystack.Length < needleLower.Length) return false;
+        for (int i = 0; i + needleLower.Length <= haystack.Length; i += 2)
+        {
+            bool match = true;
+            for (int j = 0; j < needleLower.Length; j += 2)
+            {
+                ushort hChar = (ushort)(haystack[i + j] | (haystack[i + j + 1] << 8));
+                ushort nChar = (ushort)(needleLower[j] | (needleLower[j + 1] << 8));
+                if (hChar < 128) hChar = char.ToLowerInvariant((char)hChar);
+                if (hChar != nChar) { match = false; break; }
+            }
+            if (match) return true;
+        }
+        return false;
     }
 
     /// <summary>

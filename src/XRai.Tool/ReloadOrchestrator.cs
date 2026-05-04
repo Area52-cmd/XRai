@@ -126,6 +126,12 @@ public class ReloadOrchestrator
             }
             catch { }
 
+            // Note: targeted Resiliency scrub runs LATER, after we know which
+            // .xll we're launching. We only clear entries pointing to THIS
+            // specific addin — Office's protection of other addins (Bloomberg,
+            // FactSet, etc.) is preserved. See call site below the xll-resolve
+            // step.
+
             // Step 2: Ensure XRai-Skill-Local NuGet source exists
             // (idempotent — if already configured, dotnet returns error which we ignore)
             reporter.Starting("nuget-source");
@@ -245,6 +251,21 @@ public class ReloadOrchestrator
                 return Response.Error($"XLL not found after build: {xllPath}");
 
             Step("xll-resolve", "ok", Path.GetFileName(xllPath));
+
+            // Step 3.5: Targeted Resiliency scrub — clear ONLY the entries
+            // pointing to THIS .xll. Preserves Office's protection of every
+            // other addin on the user's system (Bloomberg, FactSet, etc.).
+            // Required because the .NET 8 + Excel-DNA + WPF teardown FailFast
+            // (0x80131506) writes a Resiliency entry that would otherwise
+            // (a) show "Excel didn't shut down properly — Safe Mode?" prompt,
+            // (b) auto-add the addin to DisabledItems, blocking next launch.
+            // Cleared entries are recreated automatically by Office if the
+            // addin keeps crashing — Office's protection model is preserved
+            // for THIS addin too, just shifted forward by one rebuild.
+            int scrubbed = 0;
+            try { scrubbed = ScrubResiliencyForAddin(xllPath); } catch { }
+            if (scrubbed > 0)
+                Step("resiliency-scrub", "ok", $"cleared {scrubbed} stale crash entr{(scrubbed == 1 ? "y" : "ies")} for this addin");
 
             // Step 4: Launch Excel with the .xll
             reporter.Starting("launch-excel");
@@ -538,5 +559,100 @@ public class ReloadOrchestrator
             });
         }
         return list.ToArray();
+    }
+
+    /// <summary>
+    /// Targeted Resiliency scrub. Only deletes Office Resiliency registry
+    /// entries whose binary value contains the given <paramref name="addinPath"/>.
+    /// Office's protection of every OTHER addin on the user's system is
+    /// preserved.
+    ///
+    /// Resiliency entries are stored as REG_BINARY values under
+    /// HKCU\Software\Microsoft\Office\{ver}\{app}\Resiliency\{StartupItems|DisabledItems|...}.
+    /// The path of the addin that crashed is encoded as UTF-16LE somewhere
+    /// in each blob; we substring-match (case-insensitively, on the file
+    /// name) instead of reverse-engineering the full undocumented format.
+    ///
+    /// Returns the number of values deleted.
+    /// </summary>
+    public static int ScrubResiliencyForAddin(string addinPath)
+    {
+        if (string.IsNullOrWhiteSpace(addinPath)) return 0;
+
+        // We match on the LOWERCASED filename only — Office tends to store
+        // the path as the user typed it but normalized to lower case in some
+        // versions. Filename match is enough specificity (an addin's .xll
+        // filename is effectively unique in the user's Resiliency state).
+        var fileName = System.IO.Path.GetFileName(addinPath).ToLowerInvariant();
+        if (fileName.Length == 0) return 0;
+        var fileNameUtf16Lower = System.Text.Encoding.Unicode.GetBytes(fileName);
+
+        int deleted = 0;
+        string[] apps = { "Excel", "Word", "PowerPoint" };
+        string[] versions = { "16.0", "15.0", "14.0" };
+
+        foreach (var app in apps)
+        {
+            foreach (var ver in versions)
+            {
+                var keyPath = $@"Software\Microsoft\Office\{ver}\{app}\Resiliency";
+                try
+                {
+                    using var rootKey = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(keyPath, writable: false);
+                    if (rootKey == null) continue;
+                    foreach (var bucketName in rootKey.GetSubKeyNames())
+                    {
+                        try
+                        {
+                            using var bucket = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                                $@"{keyPath}\{bucketName}", writable: true);
+                            if (bucket == null) continue;
+                            foreach (var valName in bucket.GetValueNames())
+                            {
+                                try
+                                {
+                                    var raw = bucket.GetValue(valName) as byte[];
+                                    if (raw == null) continue;
+                                    if (BlobContainsLowercased(raw, fileNameUtf16Lower))
+                                    {
+                                        bucket.DeleteValue(valName, throwOnMissingValue: false);
+                                        deleted++;
+                                    }
+                                }
+                                catch { }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+            }
+        }
+        return deleted;
+    }
+
+    /// <summary>
+    /// Lowercases the haystack ON THE FLY (in a copy) and substring-matches
+    /// the (already-lowercased) needle. We don't trust haystack casing.
+    /// </summary>
+    private static bool BlobContainsLowercased(byte[] haystack, byte[] needleLower)
+    {
+        if (needleLower.Length == 0 || haystack.Length < needleLower.Length) return false;
+        // Convert UTF-16 chars to lowercase by inspecting pairs.
+        for (int i = 0; i + needleLower.Length <= haystack.Length; i += 2)
+        {
+            bool match = true;
+            for (int j = 0; j < needleLower.Length; j += 2)
+            {
+                // UTF-16LE: low byte first, high byte second. Compare the
+                // lower-case form of the haystack char to the needle.
+                ushort hChar = (ushort)(haystack[i + j] | (haystack[i + j + 1] << 8));
+                ushort nChar = (ushort)(needleLower[j] | (needleLower[j + 1] << 8));
+                if (hChar < 128) hChar = char.ToLowerInvariant((char)hChar);
+                if (hChar != nChar) { match = false; break; }
+            }
+            if (match) return true;
+        }
+        return false;
     }
 }

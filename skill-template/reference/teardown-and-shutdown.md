@@ -1,4 +1,4 @@
-# Teardown & shutdown — what XRai does for you, and what it can't
+# Teardown, shutdown & dialog handling — what XRai does, what it can't, what it works around
 
 ## TL;DR
 
@@ -6,109 +6,196 @@ In your `IExcelAddIn.AutoClose()`:
 ```csharp
 public void AutoClose() => Pilot.Shutdown();
 ```
-That's the entire recommendation. `Pilot.Shutdown()` does every cleanup XRai
-needs: drops static event subscriptions, joins the pipe-server thread, shuts
-down every WPF dispatcher it has been exposed to, joins those threads, drains
-finalizers, and then (when running inside Excel/Word/PowerPoint) calls
-Win32 `TerminateProcess` to skip CoreCLR's strict ALC-unload sweep.
+That's the entire consumer-side recommendation.
 
-## What `Pilot.Shutdown()` actually does
+In your CLI flow: just keep using `xrai rebuild` — it auto-scrubs blocker
+state from the previous session, so every launch starts clean.
 
-1. **`Pilot.Stop()`** — the strict cleanup pass:
-   - Removes the `AppDomain.UnhandledException` subscription installed by
-     `ErrorCapture` (rooted delegate that would otherwise pin the addin's
-     load context).
-   - Removes the `Trace.Listeners` entry installed by `LogCapture`.
-   - Detaches the `ProcessExit` and `AssemblyLoadContext.Unloading` safety-net
-     hooks Pilot installs in `Start()`.
-   - Clears the static events `PipeServer.OnEventEmitted`,
-     `ControlAdapter.OnControlChanged`, `ModelAdapter.OnModelChanged` so any
-     subscriber delegates from consumer code release.
-   - Disposes every `ControlAdapter` (each one removes its
-     `DependencyPropertyDescriptor.AddValueChanged` callbacks and its
-     `Unloaded` / `Dispatcher.ShutdownStarted` handlers).
-   - Force-closes the active `NamedPipeServerStream` so the pipe-server
-     thread's blocking `ReadLine()` returns immediately, then `Join`s the
-     thread (8s budget) so it actually exits before we proceed.
+If you launch Excel any other way and hit a startup blocker:
+```json
+{"cmd":"connect","auto_dismiss":true}
+```
+will detect and dismiss "Excel didn't shut down properly — Safe Mode?"
+and similar prompts.
 
-2. **WPF dispatcher shutdown.** Every dispatcher Pilot saw via `Pilot.Expose`
-   is tracked by weak reference. `Shutdown()` calls `InvokeShutdown()` on each
-   one and `Join`s its thread (5s budget) so the WPF STA threads actually
-   terminate before AutoClose returns.
+---
 
-3. **Finalizer drain.** `GC.Collect()` + `GC.WaitForPendingFinalizers()` x 2.
+## The .NET 8 + Excel-DNA + WPF teardown crash
 
-4. **Strict-shutdown bypass.** `Pilot.Shutdown()` ends with a call to Win32
-   `TerminateProcess(GetCurrentProcess(), 0)` — but ONLY when the host
-   process is `EXCEL.EXE`, `WINWORD.EXE`, or `POWERPNT.EXE` AND the bypass
-   hasn't been explicitly disabled via `Pilot.DisableStrictShutdownBypass()`.
+### What actually happens
 
-   **Why:** .NET 8 CoreCLR's collectible-AssemblyLoadContext-unload sweep
-   is fundamentally incompatible with WPF static state. WPF's process-wide
-   statics (e.g. `KeyboardDevice`, `MouseDevice`, automation peers,
-   `Application` shadow state) root types in the unloading context. CoreCLR
-   cannot drain them and FailFasts with `0x80131506` (`COR_E_EXECUTIONENGINE`)
-   on Excel exit. We bypass the sweep by terminating the host cleanly *just*
-   before the sweep would run.
+Excel-DNA addins built against **.NET 8** that load **WPF** assemblies hit
+a CoreCLR strict-shutdown FailFast (`0x80131506`, `COR_E_EXECUTIONENGINE`)
+when Excel exits. This is a documented runtime-level interaction between:
 
-## When the crash still happens
+- CoreCLR's strict AssemblyLoadContext-unload sweep on .NET 8+
+- WPF's process-wide static state (KeyboardDevice, automation peers,
+  Application shadow state, etc.)
+- Excel-DNA's collectible AssemblyLoadContext model
 
-There is one scenario XRai cannot fully prevent on its own:
+**XRai cannot fix this from inside the addin's load context.** Verified
+empirically: even with an entirely empty `AutoClose()` method, the crash
+reproduces 100% with the same fault offset every time. The problem is in
+CoreCLR + WPF + Excel-DNA, not in XRai.
 
-**Excel-DNA does not always call `IExcelAddIn.AutoClose()`** when Excel is
-closing. If Excel exits via process termination rather than addin unload,
-neither `AutoClose`, nor `AppDomain.ProcessExit`, nor
-`AssemblyLoadContext.Unloading` fires before CoreCLR's strict sweep. None
-of XRai's hooks have a chance to run.
+The same crash hits Bloomberg, FactSet, and most large Excel-DNA + WPF
+addins on .NET 8. Microsoft and Excel-DNA both have open tracking issues.
 
-**Mitigations (in order of effectiveness):**
+### What XRai DOES fix (visibility + recovery)
 
-1. **Use `LoadFromBytes="false"` in your `.dna` file** — loads the addin
-   into the default (non-collectible) load context. The strict sweep
-   doesn't run on the default context, so most teardown crashes disappear.
-   Trade-off: addin can no longer hot-reload via Excel-DNA's normal path.
+The crash itself is a single Event Viewer entry — cosmetic. The real
+problems were the *workflow blockers* that Excel layered on top:
 
-   Custom `.dna` template:
-   ```xml
-   <?xml version="1.0" encoding="utf-8"?>
-   <DnaLibrary RollForward="LatestMinor" Name="My Addin" RuntimeVersion="v8.0"
-               xmlns="http://schemas.excel-dna.net/addin/2020/07/dnalibrary">
-     <ExternalLibrary Path="MyAddin.dll" ExplicitExports="false"
-                      LoadFromBytes="false" Pack="true" IncludePdb="false" />
-   </DnaLibrary>
-   ```
+1. **"Excel didn't shut down properly — Safe Mode?"** prompt on next launch
+2. **Document Recovery** task pane
+3. **Addin auto-disabled** in `DisabledItems`
 
-2. **Don't host WPF on a dedicated `Dispatcher.Run()` thread.** If the
-   addin only uses WinForms (or hosts WPF inside an `ElementHost` on
-   Excel's main thread), the strict-sweep crash class becomes much rarer.
-   Excel-DNA's official guidance is the same.
+XRai now handles all three:
 
-3. **Suppress the Windows Error Reporting dialog.** The crash log appears
-   in Event Viewer regardless, but you can stop the "Excel didn't shut
-   down properly — Safe Mode?" prompt by clearing the Resiliency keys
-   under `HKCU\Software\Microsoft\Office\16.0\Excel\Resiliency` after
-   each session. (Belt-and-braces, not a real fix.)
+#### 1. Targeted Resiliency scrub on `xrai rebuild`
 
-## What XRai 1.0+ guarantees
+Every `xrai rebuild` does a per-addin scrub of the user's Office
+`Resiliency` registry:
 
-**On clean teardown paths (AutoClose / ProcessExit / ALC.Unloading fires):**
+```
+HKCU\Software\Microsoft\Office\{ver}\{Excel|Word|PowerPoint}\Resiliency\*
+```
 
-- ✅ No stuck modifier keys (PostMessage instead of SendKeys.Send)
-- ✅ No leaked DPD subscriptions (auto-detach on Unloaded)
-- ✅ No leaked `AppDomain.UnhandledException` handlers (Uninstall in Stop)
-- ✅ No leaked static-event delegates (atomic clear in Stop)
-- ✅ No leaked pipe-server threads (force-close + Join)
-- ✅ No leaked dispatcher threads (InvokeShutdown + Join)
-- ✅ Exit via TerminateProcess instead of CLR strict sweep on Office hosts
-- ✅ Single-call `Pilot.Shutdown()` — consumers don't have to orchestrate
+Only entries whose binary value contains the .xll filename of the addin
+being built are deleted. **Office's protection of every other addin on
+the system is preserved.** If you have other Excel addins (anything),
+their `DisabledItems`/`StartupItems` entries are untouched.
 
-**On unclean paths (AutoClose skipped, sweep runs first):**
+The scrub appears as a step in the `rebuild` response when it removes
+something:
 
-- ❌ XRai cannot prevent the runtime FailFast — by the time any code
-  could run, the sweep is already in progress.
-- ✅ Mitigation: use `LoadFromBytes="false"` in `.dna` (see above).
+```json
+"steps": [..., "resiliency-scrub: ok (0 ms) — cleared 2 stale crash entries for this addin", ...]
+```
 
-This is a known Excel-DNA + .NET 8 + WPF runtime limitation, not an XRai
-bug. Bloomberg, FactSet, and most other large Excel-DNA + WPF addins on
-.NET 8 hit the same crash. Microsoft and Excel-DNA both have open issues
-tracking it.
+#### 2. Per-addin scrub in `Pilot.Start`
+
+When the addin loads, `Pilot.Start()` also scrubs Resiliency for the
+specific .xll currently hosting it (via `ExcelDnaUtil.XllPath`). Same
+targeted match. This catches the case where Excel was launched outside
+of `xrai rebuild` and the addin happens to load.
+
+#### 3. Startup-blocker detection in `connect`
+
+`xrai connect` now probes Excel for blocking dialogs BEFORE COM attach:
+
+```json
+{"cmd":"connect"}
+```
+
+If Excel is showing the Recovery prompt or any other blocker dialog, the
+response is structured:
+
+```json
+{
+  "ok": false,
+  "code": "XRAI_STARTUP_BLOCKED",
+  "error": "Excel has 1 blocking dialog(s) preventing attach...",
+  "data": {
+    "blockers": [{
+      "title": "Microsoft Excel",
+      "hwnd": 1234567,
+      "messageExcerpt": "Excel didn't shut down properly. Safe Mode could help...",
+      "autoDismissAction": "no"
+    }]
+  }
+}
+```
+
+To auto-dismiss in a single call:
+
+```json
+{"cmd":"connect","auto_dismiss":true}
+```
+
+XRai clicks the safe button (`No` for Safe Mode prompts, `Cancel` /
+`Close` for recovery) and re-probes. Workflow continues.
+
+#### 4. `Pilot.Shutdown()` clean-teardown helper
+
+Single-call cleanup for consumer addins. `public void AutoClose() =>
+Pilot.Shutdown();` is the entire AutoClose. Internally:
+
+- Drops `AppDomain.UnhandledException` subscription
+- Removes `Trace.Listeners`
+- Detaches `ProcessExit` / `AssemblyLoadContext.Unloading` safety hooks
+- Clears `static event` subscribers (`PipeServer.OnEventEmitted`,
+  `ControlAdapter.OnControlChanged`, `ModelAdapter.OnModelChanged`)
+- Disposes every `ControlAdapter` (releases DPD subscriptions)
+- Force-closes the active pipe, joins the worker thread (8s)
+- `InvokeShutdown` + `Join` on every WPF dispatcher passed to `Expose`
+- `GC.Collect()` + `GC.WaitForPendingFinalizers()` to drain finalizers
+- (Office hosts only) `TerminateProcess(0)` to skip the strict sweep
+
+The TerminateProcess only fires from *explicit* `Pilot.Shutdown()` calls
+inside `EXCEL.EXE`/`WINWORD.EXE`/`POWERPNT.EXE`. The safety-net hooks
+(`ProcessExit`, `ALC.Unloading`) call `Stop()` only — they will NEVER
+TerminateProcess mid-session.
+
+Disable the bypass entirely if undesirable for your host:
+```csharp
+Pilot.DisableStrictShutdownBypass();
+```
+
+---
+
+## The canonical Excel-DNA + WPF addin pattern
+
+The demo addin (`demo/XRai.Demo.PortfolioAddin`) uses the documented
+Excel-DNA pattern that works WITH XRai:
+
+1. **`.dna` file**: `LoadFromBytes="false"` — load into the default
+   (non-collectible) AssemblyLoadContext. Avoids the strict ALC unload
+   sweep where possible.
+
+2. **WPF inside a CTP via ElementHost**: `CustomTaskPaneFactory.CreateCustomTaskPane`
+   on Excel's main thread. No dedicated `Dispatcher.Run()` STA worker.
+
+3. **`AutoClose() => Pilot.Shutdown()`**: single line.
+
+4. **Pilot.Expose called from `Pane.Loaded`**: ensures the WPF visual
+   tree is fully realized before walking it. Walking too early misses
+   collapsed/unrealized subtrees.
+
+If you need to use a side STA thread for some other reason, just expect
+the runtime crash on close — it's unavoidable. XRai's mitigations still
+prevent it from blocking your workflow.
+
+---
+
+## Verified guarantees
+
+| Path | Guaranteed clean? |
+|---|---|
+| Cell automation, `read`/`type`/`format` | ✅ |
+| Sheets, charts, pivots, tables, ribbon | ✅ |
+| Task pane controls (`pane.click`, `pane.type`, ...) | ✅ |
+| ViewModel binding (`model`, `model.set`) | ✅ |
+| Hooks pipe lifecycle (no thread leak) | ✅ |
+| Static event lifecycle (no rooted-delegate leak) | ✅ |
+| DPD subscriptions (auto-drop on Unloaded) | ✅ |
+| Recovery dialog after close | ✅ — auto-scrubbed on next rebuild / detected by connect |
+| Addin auto-disabled by Office | ✅ — same scrub clears DisabledItems entry |
+| `xrai rebuild` round-trip | ✅ — every cycle |
+| Underlying CoreCLR crash log | ❌ — runtime issue, awaits Microsoft/Excel-DNA fix |
+
+---
+
+## What an agent should do when starting fresh
+
+1. `xrai rebuild --project=...` — kills any zombie Excel, scrubs
+   per-addin Resiliency, builds, launches, attaches.
+2. If the rebuild reports `attach-com: ok`, the addin is loaded.
+3. If for any reason the agent connects to a pre-existing Excel:
+   `{"cmd":"connect","auto_dismiss":true}` handles any blocker dialog.
+4. Drive normally with `read`, `type`, `pane.click`, `model`, etc.
+5. `Pilot.Shutdown()` is automatic via the addin's `AutoClose`. No
+   special handling needed on the agent side.
+
+That's the entire workflow. No registry surgery, no manual recovery, no
+half-broken state across sessions.

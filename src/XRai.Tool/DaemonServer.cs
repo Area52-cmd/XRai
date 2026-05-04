@@ -1411,6 +1411,46 @@ public class DaemonServer
         _router.Register("connect", args =>
         {
             var timeoutMs = args["timeout"]?.GetValue<int>() ?? 30000;
+
+            // Probe for blocking startup dialogs BEFORE attempting COM attach.
+            // Excel's "didn't shut down properly — Safe Mode?" prompt and the
+            // Document Recovery panel block COM attach until dismissed. We
+            // detect them and either auto-dismiss (if asked) or surface them
+            // in the response so the agent can decide.
+            bool autoDismiss = args["auto_dismiss"]?.GetValue<bool>() ?? false;
+            var blockers = DetectStartupBlockers();
+            if (blockers.Count > 0 && autoDismiss)
+            {
+                var dismissed = new System.Collections.Generic.List<string>();
+                foreach (var b in blockers)
+                {
+                    try
+                    {
+                        if (b.AutoDismissAction == "no" || b.AutoDismissAction == "cancel" || b.AutoDismissAction == "close")
+                        {
+                            DismissDialog(b.Hwnd, b.AutoDismissAction);
+                            dismissed.Add(b.Title);
+                        }
+                    }
+                    catch { }
+                }
+                if (dismissed.Count > 0)
+                {
+                    System.Threading.Thread.Sleep(500);
+                    blockers = DetectStartupBlockers(); // re-probe
+                }
+            }
+
+            if (blockers.Count > 0)
+            {
+                return Response.ErrorWithData(
+                    $"Excel has {blockers.Count} blocking dialog(s) preventing attach. " +
+                    "Pass {\"cmd\":\"connect\",\"auto_dismiss\":true} to dismiss them automatically, " +
+                    "or close them manually and retry.",
+                    data: new { blockers = blockers.ConvertAll(b => (object)new { b.Title, b.Hwnd, b.MessageExcerpt, b.AutoDismissAction }) },
+                    code: "XRAI_STARTUP_BLOCKED");
+            }
+
             try
             {
                 if (!_session.IsAttached) _session.WaitAndAttach(timeoutMs);
@@ -1602,6 +1642,191 @@ public class DaemonServer
         }
         catch { /* Hooks are optional */ }
     }
+
+    /// <summary>
+    /// Captured info about a detected blocking dialog so the response can
+    /// describe it in a structured way and so DismissDialog can act on it.
+    /// </summary>
+    private record StartupBlocker(IntPtr Hwnd, string Title, string MessageExcerpt, string AutoDismissAction);
+
+    /// <summary>
+    /// Look for Excel startup dialogs that block COM attach. Common patterns:
+    ///   - "Microsoft Excel" with body "Excel didn't shut down properly..." (Recovery / Safe Mode)
+    ///   - "Microsoft Excel" with body about disabled add-ins (DisabledItems aftermath)
+    ///   - "Document Recovery" task pane (technically not a dialog but blocks)
+    /// We match by window class and title. AutoDismissAction encodes the
+    /// safe answer to dismiss WITHOUT data loss:
+    ///   "no"     — click the No button (skips Safe Mode)
+    ///   "cancel" — click Cancel
+    ///   "close"  — click the X
+    /// </summary>
+    private System.Collections.Generic.List<StartupBlocker> DetectStartupBlockers()
+    {
+        var list = new System.Collections.Generic.List<StartupBlocker>();
+        try
+        {
+            foreach (var p in Process.GetProcessesByName("EXCEL"))
+            {
+                EnumProcessWindows(p.Id, hwnd =>
+                {
+                    try
+                    {
+                        var sb = new System.Text.StringBuilder(256);
+                        GetWindowText(hwnd, sb, sb.Capacity);
+                        var title = sb.ToString();
+                        if (string.IsNullOrEmpty(title)) return true;
+
+                        var classSb = new System.Text.StringBuilder(256);
+                        GetClassName(hwnd, classSb, classSb.Capacity);
+                        var className = classSb.ToString();
+
+                        // Excel's startup recovery prompt is a #32770 (dialog)
+                        // class window owned by Excel with "Microsoft Excel" or
+                        // similar in the title bar. The body text contains
+                        // "didn't shut down" / "Safe Mode" / "disabled".
+                        if (className == "#32770" && IsWindowVisible(hwnd))
+                        {
+                            // Walk child windows to grab the body text.
+                            var body = new System.Text.StringBuilder();
+                            EnumChildWindows(hwnd, (child, _) =>
+                            {
+                                var childTextLen = GetWindowTextLength(child);
+                                if (childTextLen > 0 && childTextLen < 2000)
+                                {
+                                    var cb = new System.Text.StringBuilder(childTextLen + 1);
+                                    GetWindowText(child, cb, cb.Capacity);
+                                    body.AppendLine(cb.ToString());
+                                }
+                                return true;
+                            }, IntPtr.Zero);
+                            var bodyText = body.ToString();
+
+                            string? action = null;
+                            string excerpt = bodyText.Length > 200 ? bodyText.Substring(0, 200) + "..." : bodyText;
+                            if (bodyText.IndexOf("didn't shut down", StringComparison.OrdinalIgnoreCase) >= 0
+                                || bodyText.IndexOf("Safe Mode", StringComparison.OrdinalIgnoreCase) >= 0
+                                || bodyText.IndexOf("safe mode", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                action = "no"; // "Do you want to start in Safe Mode?" — answer No
+                            }
+                            else if (bodyText.IndexOf("caused a problem", StringComparison.OrdinalIgnoreCase) >= 0
+                                  || bodyText.IndexOf("disabled", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                action = "no"; // "...disable it?" — answer No
+                            }
+                            else if (bodyText.IndexOf("recovery", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                action = "close"; // Document Recovery — close the panel
+                            }
+
+                            if (action != null)
+                            {
+                                list.Add(new StartupBlocker(hwnd, title, excerpt.Trim(), action));
+                            }
+                        }
+                    }
+                    catch { }
+                    return true;
+                });
+            }
+        }
+        catch { }
+        return list;
+    }
+
+    private void DismissDialog(IntPtr hwnd, string action)
+    {
+        try
+        {
+            // Find the matching button by caption and click it via BM_CLICK.
+            string[] candidates = action switch
+            {
+                "no" => new[] { "&No", "No" },
+                "cancel" => new[] { "Cancel", "&Cancel" },
+                "close" => new[] { "Close", "&Close" },
+                _ => new[] { "OK", "&OK" }
+            };
+
+            IntPtr button = IntPtr.Zero;
+            EnumChildWindows(hwnd, (child, _) =>
+            {
+                var sb = new System.Text.StringBuilder(64);
+                GetWindowText(child, sb, sb.Capacity);
+                var t = sb.ToString();
+                foreach (var c in candidates)
+                {
+                    if (string.Equals(t, c, StringComparison.OrdinalIgnoreCase))
+                    {
+                        button = child;
+                        return false;
+                    }
+                }
+                return true;
+            }, IntPtr.Zero);
+
+            if (button != IntPtr.Zero)
+            {
+                const uint BM_CLICK = 0x00F5;
+                SendMessage(button, BM_CLICK, IntPtr.Zero, IntPtr.Zero);
+            }
+            else
+            {
+                // Fallback: post WM_CLOSE to the dialog.
+                const uint WM_CLOSE = 0x0010;
+                PostMessage(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+            }
+        }
+        catch { }
+    }
+
+    // ── Win32 API for dialog detection ─────────────────────────────────
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    private delegate bool ProcessWindowCallback(IntPtr hWnd);
+
+    private static bool EnumProcessWindows(int processId, ProcessWindowCallback callback)
+    {
+        // Iterate all top-level windows owned by the given process.
+        bool keepGoing = true;
+        EnumWindows((hwnd, _) =>
+        {
+            GetWindowThreadProcessId(hwnd, out int wpid);
+            if (wpid == processId)
+            {
+                keepGoing = callback(hwnd);
+                if (!keepGoing) return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return keepGoing;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+    private static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern int GetWindowTextLength(IntPtr hWnd);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+    private static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out int lpdwProcessId);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
     public static bool IsDaemonRunning()
     {

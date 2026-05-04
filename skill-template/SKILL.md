@@ -44,7 +44,12 @@ command live."*
 ### Step 3: If this is an Excel/desktop project, get the app running
 - **Existing project with a .csproj**: `{"cmd":"rebuild","project":"path/to/project.csproj"}`
 - **Greenfield**: scaffold first, THEN rebuild
-- **Already running**: `{"cmd":"connect"}` or `{"cmd":"status"}` to verify
+- **Already running**: `{"cmd":"connect","auto_dismiss":true}` — auto-detects
+  and dismisses any "Excel didn't shut down properly" / Safe Mode / Recovery
+  blocker dialogs from a previous crashed session. If a blocker is detected
+  but `auto_dismiss` was not set, the response surfaces it under `data.blockers`
+  with title + message excerpt + the safe button to click — the agent can
+  decide whether to dismiss or surface to the user.
 
 ### Step 4: Confirm visibility
 ```bash
@@ -90,7 +95,7 @@ gives the user a worse experience than any other IDE assistant.
 
 1. `xrai set-ide <user's editor>` → `xrai --studio &` → open IDE on the workspace.
 2. Scaffold: `{"cmd":"init","template":"excel-dna"}` (or similar).
-3. Write code with `Pilot.Expose(rootElement)` + `Pilot.ExposeModel(vm)` so every pane/model command works from day one.
+3. Write code with `Pilot.Start()` in `AutoOpen`, `Pilot.Expose(rootElement)` + `Pilot.ExposeModel(vm)` so every pane/model command works from day one. **AutoClose:** `public void AutoClose() => Pilot.Shutdown();` — single line, full cleanup. See `reference/teardown-and-shutdown.md`.
 4. Always `{"cmd":"rebuild","project":"..."}` — never raw `dotnet build`.
 5. After rebuild: `{"cmd":"status"}` → `{"cmd":"pane"}` → `{"cmd":"model"}` to confirm the surface is exposed.
 6. Drive the app via `pane.*` / `model.*` / `ribbon.*` commands batched where possible.

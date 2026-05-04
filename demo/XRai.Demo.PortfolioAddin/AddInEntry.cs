@@ -1,17 +1,28 @@
-using System.Diagnostics;
-using System.Windows;
-using System.Windows.Threading;
 using ExcelDna.Integration;
+using ExcelDna.Integration.CustomUI;
 using XRai.Hooks;
 
 namespace XRai.Demo.PortfolioAddin;
 
+/// <summary>
+/// Demo Excel-DNA addin demonstrating XRai integration with full WPF UI.
+///
+/// CRITICAL design choices for clean .NET 8 + Excel-DNA + WPF teardown:
+///   1. .dna sets LoadFromBytes="false" — addin loads into the DEFAULT
+///      AssemblyLoadContext (non-collectible). CoreCLR's strict ALC unload
+///      sweep does NOT run on the default context, sidestepping the
+///      0x80131506 FailFast that WPF static state otherwise triggers.
+///   2. WPF lives inside a CustomTaskPane via WinForms ElementHost — on
+///      Excel's MAIN UI thread. No dedicated STA thread, no Dispatcher.Run().
+///      Side-thread WPF roots WPF statics in ways that break unload even
+///      with LoadFromBytes=false.
+///   3. AutoClose calls Pilot.Shutdown — single-call cleanup.
+/// </summary>
 public class AddInEntry : IExcelAddIn
 {
     private static PortfolioViewModel? _viewModel;
-    private static PortfolioPane? _pane;
-    private static Window? _window;
-    private static Thread? _wpfThread;
+    private static CustomTaskPane? _ctp;
+    private static TaskPaneHost? _host;
 
     public void AutoOpen()
     {
@@ -20,56 +31,42 @@ public class AddInEntry : IExcelAddIn
         _viewModel = new PortfolioViewModel();
         Pilot.ExposeModel(_viewModel, "Portfolio");
 
-        // Launch the WPF pane as a floating window on a dedicated STA thread
-        _wpfThread = new Thread(() =>
+        // CTP creation must happen on Excel's main thread once Excel is ready.
+        // Doing it directly in AutoOpen sometimes runs before Excel finishes
+        // initializing the COM bridge needed by CustomTaskPaneFactory.
+        ExcelAsyncUtil.QueueAsMacro(() =>
         {
             try
             {
-                _pane = new PortfolioPane(_viewModel);
-                _window = new Window
-                {
-                    Title = "XRai Portfolio Tracker",
-                    Content = _pane,
-                    Width = 420,
-                    Height = 700,
-                    WindowStyle = WindowStyle.ToolWindow,
-                    Topmost = true,
-                    ShowInTaskbar = false,
-                };
+                _host = new TaskPaneHost(_viewModel!);
+                _ctp = CustomTaskPaneFactory.CreateCustomTaskPane(_host, "XRai Portfolio Tracker");
+                _ctp.DockPosition = MsoCTPDockPosition.msoCTPDockPositionRight;
+                _ctp.Width = 420;
+                _ctp.Visible = true;
 
-                _window.Loaded += (s, e) =>
+                _host.Pane.Loaded += (_, _) =>
                 {
-                    // Position to the right of Excel
                     try
                     {
-                        dynamic app = ExcelDnaUtil.Application;
-                        _window.Left = (double)app.Left + (double)app.Width - 10;
-                        _window.Top = (double)app.Top + 50;
+                        Pilot.Expose(_host.Pane);
+                        Pilot.Log($"Portfolio pane visible with {_host.Pane.ViewModel.Holdings.Count} stocks");
                     }
-                    catch { }
-
-                    // Expose controls to hooks
-                    Pilot.Expose(_pane);
-                    Pilot.Log($"Portfolio pane visible with {_pane.ViewModel.Holdings.Count} stocks");
+                    catch (Exception ex) { Pilot.Log($"Expose failed: {ex.Message}"); }
                 };
-
-                _window.Show();
-                Dispatcher.Run();
             }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"WPF window error: {ex}");
-            }
+            catch (Exception ex) { Pilot.Log($"CTP create failed: {ex.Message}"); }
         });
-        _wpfThread.SetApartmentState(ApartmentState.STA);
-        _wpfThread.IsBackground = true;
-        _wpfThread.Name = "XRai-PortfolioPane";
-        _wpfThread.Start();
 
-        Pilot.Log("Portfolio add-in loaded");
+        Pilot.Log("Portfolio add-in loaded (CTP+ElementHost, LoadFromBytes=false)");
     }
 
-    public void AutoClose() => Pilot.Shutdown();
+    public void AutoClose()
+    {
+        try { _ctp?.Delete(); } catch { }
+        _ctp = null;
+        _host = null;
+        Pilot.Shutdown();
+    }
 
     public static PortfolioViewModel? ViewModel => _viewModel;
 }
