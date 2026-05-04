@@ -18,6 +18,10 @@ public class ModelAdapter : IDisposable
     /// </summary>
     public static event Action<string, string, object?, object?>? OnModelChanged;
 
+    /// <summary>Detach every subscriber. Called by Pilot.Stop so the static
+    /// event does not pin consumer assemblies across an unload.</summary>
+    internal static void ClearOnModelChanged() { OnModelChanged = null; }
+
     private readonly INotifyPropertyChanged _model;
     private readonly Dictionary<string, PropertyInfo> _properties;
     private readonly Dictionary<string, object?> _lastValues = new(StringComparer.OrdinalIgnoreCase);

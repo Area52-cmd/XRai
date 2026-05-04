@@ -59,6 +59,10 @@ public class ControlAdapter : IControlAdapter, IDisposable
     /// </summary>
     public static event Action<string, string, object?>? OnControlChanged;
 
+    /// <summary>Detach every subscriber. Called by Pilot.Stop so the static
+    /// event does not pin consumer assemblies across an unload.</summary>
+    internal static void ClearOnControlChanged() { OnControlChanged = null; }
+
     private readonly FrameworkElement _element;
     private readonly List<Action> _unsubscribers = new();
     private bool _disposed;

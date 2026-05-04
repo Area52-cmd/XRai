@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<DnaLibrary RollForward="LatestMinor" Name="XRai.Demo.PortfolioAddin Add-In" RuntimeVersion="v8.0" xmlns="http://schemas.excel-dna.net/addin/2020/07/dnalibrary">
+  <!-- LoadFromBytes="false" loads the addin into the DEFAULT (non-collectible)
+       AssemblyLoadContext. Required when the addin uses WPF — .NET 8 CoreCLR's
+       strict ALC-unload sweep cannot drain WPF's process-wide static state
+       and FailFasts with 0x80131506 on Excel exit. The non-collectible
+       context is never unloaded; Excel just exits cleanly. -->
+  <ExternalLibrary Path="XRai.Demo.PortfolioAddin.dll" ExplicitExports="false" LoadFromBytes="false" Pack="true" IncludePdb="false" />
+</DnaLibrary>

@@ -28,6 +28,7 @@ public class PipeServer
     private CancellationTokenSource? _cts;
     private Thread? _thread;
     private StreamWriter? _activeWriter;
+    private NamedPipeServerStream? _activePipe; // tracked so Stop() can force-close
     private readonly object _writerLock = new();
     private Dispatcher? _uiDispatcher;
 
@@ -85,24 +86,46 @@ public class PipeServer
 
     public void Stop()
     {
-        // Leak-audited: 2026-04-10. Stop() now joins the server thread,
-        // disposes the cancellation source, and clears the active writer
-        // reference so a clean Stop() doesn't leak the worker thread, the
-        // CTS handle, or the StreamWriter held under _writerLock.
+        // Leak-audited: 2026-05-04. Stop() must guarantee the server-loop
+        // thread has actually returned before AutoClose proceeds — relying on
+        // IsBackground=true is wrong inside an Excel-DNA addin because Excel
+        // is NOT exiting the process; it's unloading the addin assembly while
+        // the host stays alive. A still-live thread holding a pipe handle in
+        // a blocking ReadLine() during CLR assembly/AppDomain teardown causes
+        // CoreCLR to FailFast with 0x80131506 (COR_E_EXECUTIONENGINE) —
+        // exactly the crash external addins kept reporting on AutoClose.
+        //
+        // Sequence:
+        //   1) Cancel the CTS (notifies any cancellable awaits).
+        //   2) Force-dispose the active pipe so any blocking ReadLine() throws
+        //      IOException / ObjectDisposedException IMMEDIATELY. ServerLoop's
+        //      catch then breaks out of the outer while.
+        //   3) Join the thread with a longer budget (8s). Hard-failing here is
+        //      better than letting the addin teardown proceed with a live
+        //      worker — the alternative is a guaranteed Excel crash.
         try { _cts?.Cancel(); } catch { }
 
-        // Best-effort: give the server thread a moment to drain any in-flight
-        // command and exit ServerLoop. We never block forever here — the
-        // background thread is IsBackground=true so process shutdown will
-        // reap it regardless. The Join is purely to surface clean shutdown
-        // when the host has time to wait.
-        try { _thread?.Join(2000); } catch { }
+        // Force the active pipe handle closed so the synchronous ReadLine()
+        // in ServerLoop returns immediately. NamedPipeServerStream.Dispose
+        // is safe to call from another thread; it does not throw if the
+        // pipe is already disposed.
+        NamedPipeServerStream? pipeToClose;
+        lock (_writerLock)
+        {
+            pipeToClose = _activePipe;
+            _activePipe = null;
+            _activeWriter = null;
+        }
+        if (pipeToClose != null)
+        {
+            try { pipeToClose.Dispose(); } catch { }
+        }
+
+        try { _thread?.Join(8000); } catch { }
 
         try { _cts?.Dispose(); } catch { }
         _cts = null;
         _thread = null;
-
-        lock (_writerLock) { _activeWriter = null; }
 
         // Delete the token file on graceful shutdown so no stale token survives.
         try { PipeAuth.ClearToken(_pipeName); } catch { }
@@ -134,6 +157,11 @@ public class PipeServer
     /// this is a no-op delegate invocation.
     /// </summary>
     public static event Action<string, object?>? OnEventEmitted;
+
+    /// <summary>Detach every subscriber to OnEventEmitted. Called by Pilot.Stop
+    /// so the static event does not pin consumer assemblies across an
+    /// AssemblyLoadContext unload. Critical for clean Excel-DNA addin teardown.</summary>
+    internal static void ClearOnEventEmitted() { OnEventEmitted = null; }
 
     public void PushEvent(string eventType, object? data = null)
     {
@@ -202,6 +230,11 @@ public class PipeServer
                     PipeAclRestricted = false;
                 }
 
+                // Track the live pipe so Stop() can force-close it from any
+                // thread, breaking blocking reads immediately. Held under the
+                // same lock as _activeWriter so the two are always consistent.
+                lock (_writerLock) { _activePipe = pipe; }
+
                 var connectTask = pipe.WaitForConnectionAsync(_cts!.Token);
                 connectTask.Wait(_cts.Token);
 
@@ -243,14 +276,26 @@ public class PipeServer
                     }
                 }
 
-                lock (_writerLock) { _activeWriter = null; }
+                lock (_writerLock) { _activeWriter = null; _activePipe = null; }
                 Debug.WriteLine("XRai pipe client disconnected");
             }
             catch (OperationCanceledException) { break; }
+            catch (ObjectDisposedException)
+            {
+                // Stop() force-closed the pipe. Exit cleanly so the worker
+                // thread terminates promptly and the host's AutoClose can
+                // return without leaking a live thread into AppDomain unload.
+                lock (_writerLock) { _activeWriter = null; _activePipe = null; }
+                break;
+            }
             catch (Exception ex)
             {
                 Debug.WriteLine($"Pipe error: {ex.Message}");
-                lock (_writerLock) { _activeWriter = null; }
+                lock (_writerLock) { _activeWriter = null; _activePipe = null; }
+                // If cancellation has been requested, exit instead of looping
+                // back into a fresh WaitForConnectionAsync that will just be
+                // cancelled — keeps Stop() deterministic and bounded.
+                if (_cts?.IsCancellationRequested == true) break;
             }
             finally
             {

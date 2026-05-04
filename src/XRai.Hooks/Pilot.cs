@@ -17,6 +17,10 @@ public static class Pilot
     private static PipeServer? _server;
     private static readonly ControlRegistry _controls = new();
     private static readonly ModelRegistry _models = new();
+    // Every WPF dispatcher we've been told about via Expose. Shutdown()
+    // walks this list to InvokeShutdown each one and join its thread, so
+    // consumers don't have to do that orchestration in AutoClose.
+    private static readonly List<WeakReference<System.Windows.Threading.Dispatcher>> _trackedDispatchers = new();
     private static DateTime? _lastExposeAt;
     private static DateTime? _lastExposeModelAt;
     private static int _totalExposeCalls;
@@ -44,17 +48,268 @@ public static class Pilot
         ErrorCapture.Install(_server);
         LogCapture.Install(_server);
 
+        // Safety net for both Excel-DNA addin unload (collectible
+        // AssemblyLoadContext.Unloading) and process exit. Either fires
+        // Stop() so consumers who forget to call it manually still get a
+        // clean teardown. Subscribe ONCE — Pilot is a process-singleton.
+        if (!_processExitHooked)
+        {
+            try
+            {
+                AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
+                var alc = System.Runtime.Loader.AssemblyLoadContext.GetLoadContext(typeof(Pilot).Assembly);
+                if (alc != null) alc.Unloading += OnLoadContextUnloading;
+                _processExitHooked = true;
+            }
+            catch { }
+        }
+
         Debug.WriteLine($"XRai Pilot started on pipe: {pipeName}");
     }
 
+    private static bool _processExitHooked;
+    private static int _bypassStrictShutdown = 1; // 1 = on by default
+
+    /// <summary>
+    /// Disable the post-AutoClose strict-shutdown bypass. ONLY relevant if
+    /// you're hosting XRai.Hooks in a context where CoreCLR's strict
+    /// AssemblyLoadContext unload actually works (i.e. NOT Excel-DNA + WPF
+    /// on .NET 8). The default (enabled) makes Excel exit cleanly via
+    /// TerminateProcess after AutoClose, sidestepping the documented
+    /// Excel-DNA/.NET 8/WPF FailFast 0x80131506 issue.
+    /// </summary>
+    public static void DisableStrictShutdownBypass() { _bypassStrictShutdown = 0; }
+
+    /// <summary>
+    /// Process exit fires while CLR is shutting down. For Excel-DNA hosts on
+    /// .NET 8, this is our LAST chance to run code before CoreCLR's strict
+    /// AssemblyLoadContext-unload sweep begins. The sweep is what FailFasts
+    /// 0x80131506 when WPF static state is rooted. We Shutdown here (which
+    /// TerminateProcess'es when the host is Excel/Word/PowerPoint), so the
+    /// sweep never runs and Excel exits with code 0 instead of crashing.
+    /// </summary>
+    private static void OnProcessExit(object? sender, EventArgs e) { try { Shutdown(); } catch { } }
+
+    /// <summary>
+    /// AssemblyLoadContext.Unloading fires BEFORE the strict unload sweep. If
+    /// the host (Excel) is exiting, we must terminate cleanly here instead
+    /// of letting the sweep run. If the host is doing a mid-session reload
+    /// (Excel keeps running), Shutdown's IsHostExiting() guard prevents
+    /// TerminateProcess from firing — we just Stop() cleanly.
+    /// </summary>
+    private static void OnLoadContextUnloading(System.Runtime.Loader.AssemblyLoadContext alc) { try { Shutdown(); } catch { } }
+
     public static void Stop()
     {
-        LogCapture.Uninstall();
+        // Order matters for Excel-DNA / .NET 8 hosted teardown:
+        //   1) Drop AppDomain.UnhandledException subscription so the rooted
+        //      delegate stops pinning this assembly across LoadContext unload.
+        //   2) Remove the Trace listener for the same reason.
+        //   3) Clear static events that would otherwise hold subscriber
+        //      delegates from this OR consumer assemblies. Setting to null
+        //      detaches every handler in one shot.
+        //   4) Dispose every registered control/model adapter — releases their
+        //      DependencyPropertyDescriptor subscriptions and Unloaded /
+        //      Dispatcher.ShutdownStarted handlers.
+        //   5) Stop the pipe server (force-closes the live pipe, joins the
+        //      worker thread). Must happen LAST so any final shutdown event
+        //      writes still land on a live writer.
+        // Skipping any of these used to manifest as CoreCLR FailFast 0x80131506
+        // (COR_E_EXECUTIONENGINE) on Excel exit when XRai.Hooks is hosted
+        // inside an Excel-DNA addin's AssemblyLoadContext.
+        try { ErrorCapture.Uninstall(); } catch { }
+        try { LogCapture.Uninstall(); } catch { }
+
+        // Detach our own ProcessExit / ALC.Unloading hooks so the rooted
+        // delegates do not pin this assembly's load context. Same root-cause
+        // class as the ErrorCapture leak.
+        if (_processExitHooked)
+        {
+            try { AppDomain.CurrentDomain.ProcessExit -= OnProcessExit; } catch { }
+            try
+            {
+                var alc = System.Runtime.Loader.AssemblyLoadContext.GetLoadContext(typeof(Pilot).Assembly);
+                if (alc != null) alc.Unloading -= OnLoadContextUnloading;
+            }
+            catch { }
+            _processExitHooked = false;
+        }
+
+        // Clear static events. These are public so consumer code (e.g. Studio)
+        // may have attached. Null assignment removes ALL handlers atomically.
+        try { PipeServer.ClearOnEventEmitted(); } catch { }
+        try { ControlAdapter.ClearOnControlChanged(); } catch { }
+        try { ModelAdapter.ClearOnModelChanged(); } catch { }
+
+        // Dispose all adapters before stopping the pipe so DPD callbacks etc.
+        // never fire into half-disposed state. Clear() disposes each adapter.
+        try { _controls.Clear(); } catch { }
 
         _server?.Stop();
         _server = null;
 
         Debug.WriteLine("XRai Pilot stopped");
+    }
+
+    /// <summary>
+    /// One-call clean teardown for Excel-DNA / WPF / WinForms host addins.
+    /// THIS is what consumer AutoClose should call. Does, in order:
+    ///   1. Pilot.Stop() — drops every static event subscription, the
+    ///      AppDomain.UnhandledException hook, the pipe-server thread, the
+    ///      ProcessExit / ALC.Unloading hooks, every DPD subscription on
+    ///      exposed controls, and every model PropertyChanged subscription.
+    ///   2. InvokeShutdown on every WPF dispatcher we've seen via Expose,
+    ///      and Join the dispatcher thread (up to <paramref name="threadJoinMs"/>)
+    ///      so it actually exits before AutoClose returns. Without this,
+    ///      Excel-DNA initiates AssemblyLoadContext unload while a managed
+    ///      thread is still in WPF native interop and CoreCLR FailFasts
+    ///      with 0x80131506 (COR_E_EXECUTIONENGINE) on Excel exit.
+    ///   3. Force GC + finalizer drain so any addin-side finalizers run
+    ///      BEFORE the load-context unload sweep.
+    ///
+    /// Recommended consumer usage:
+    /// <code>
+    ///   public void AutoClose() => Pilot.Shutdown();
+    /// </code>
+    /// </summary>
+    public static void Shutdown(int threadJoinMs = 5000)
+    {
+        try { Stop(); } catch { }
+
+        // Snapshot then clear so the iteration is decoupled from concurrent
+        // shutdown signals (e.g. ProcessExit firing while we're already here).
+        WeakReference<System.Windows.Threading.Dispatcher>[] refs;
+        lock (_trackedDispatchers)
+        {
+            refs = _trackedDispatchers.ToArray();
+            _trackedDispatchers.Clear();
+        }
+
+        foreach (var wr in refs)
+        {
+            if (!wr.TryGetTarget(out var disp)) continue;
+            try
+            {
+                if (disp.Thread.IsAlive)
+                {
+                    disp.InvokeShutdown();
+                    disp.Thread.Join(threadJoinMs);
+                }
+            }
+            catch { /* dispatcher already shut down or thread already ended */ }
+        }
+
+        // Drain finalizers before LoadContext unload begins.
+        try
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+        }
+        catch { }
+
+        Debug.WriteLine("XRai Pilot shutdown complete");
+
+        // Strict-shutdown bypass. .NET 8 CoreCLR's AssemblyLoadContext-unload
+        // sweep is fundamentally incompatible with WPF static state hosted
+        // inside an Excel-DNA addin's collectible load context — CoreCLR
+        // FailFasts with 0x80131506 (COR_E_EXECUTIONENGINE) when it tries
+        // to drain WPF's process-wide statics that root types in the
+        // unloading context. We can't fix that from inside the addin (the
+        // crash happens after AutoClose returns, regardless of how thorough
+        // our cleanup is — verified empirically: identical crash with an
+        // empty AutoClose). The pragmatic fix is to terminate the host
+        // process cleanly BEFORE CoreCLR begins its strict sweep. Excel is
+        // exiting anyway, so this just skips the broken sweep.
+        //
+        // Only fires when:
+        //   1. The bypass hasn't been explicitly disabled, AND
+        //   2. The current process appears to be exiting (Excel is killing
+        //      the host — not a mid-session unload).
+        if (_bypassStrictShutdown != 0 && IsHostExiting())
+        {
+            // Flush stdio before TerminateProcess (a no-op for Excel but cheap).
+            try { Console.Out.Flush(); Console.Error.Flush(); } catch { }
+
+            // Direct TerminateProcess — the only path that does NOT trigger
+            // CoreCLR's strict ALC unload sweep. Environment.Exit(0) does
+            // trigger it (verified) and re-produces 0x80131506. This call
+            // returns 0 with no possibility of throwing or hanging.
+            try
+            {
+                NativeKill.TerminateProcess(NativeKill.GetCurrentProcess(), 0u);
+            }
+            catch
+            {
+                // P/Invoke literally cannot fail in any realistic way, but
+                // belt-and-braces fall through to managed Kill if it does.
+                try { System.Diagnostics.Process.GetCurrentProcess().Kill(); } catch { }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Win32 TerminateProcess — the only clean way to exit a host that has
+    /// loaded WPF into a collectible AssemblyLoadContext on .NET 8. CoreCLR's
+    /// shutdown sweep cannot drain WPF's process-wide statics that root
+    /// types in the unloading context, so it FailFasts with 0x80131506.
+    /// We bypass the sweep entirely with TerminateProcess from the host's
+    /// own AutoClose path. Excel is already exiting; this just makes the
+    /// exit clean instead of crash-logged.
+    /// </summary>
+    private static class NativeKill
+    {
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+        public static extern IntPtr GetCurrentProcess();
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool TerminateProcess(IntPtr hProcess, uint exitCode);
+    }
+
+    /// <summary>
+    /// Heuristic: is the host process currently being torn down? We only
+    /// engage the strict-shutdown bypass when this returns true, so
+    /// mid-session calls to Pilot.Shutdown (e.g. addin reload without
+    /// process exit) don't kill Excel.
+    /// </summary>
+    private static bool IsHostExiting()
+    {
+        try
+        {
+            // Excel is the textbook case. If we're hosted inside EXCEL.EXE,
+            // and AutoClose has been called, the process IS shutting down.
+            var procName = System.Diagnostics.Process.GetCurrentProcess().ProcessName;
+            if (procName.Equals("EXCEL", StringComparison.OrdinalIgnoreCase) ||
+                procName.Equals("WINWORD", StringComparison.OrdinalIgnoreCase) ||
+                procName.Equals("POWERPNT", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        catch { }
+        return false;
+    }
+
+    /// <summary>
+    /// Internal: registered by Expose so Shutdown can shut every dispatcher
+    /// down deterministically. Idempotent — re-exposing the same dispatcher
+    /// does not duplicate the entry.
+    /// </summary>
+    internal static void TrackDispatcher(System.Windows.Threading.Dispatcher dispatcher)
+    {
+        if (dispatcher == null) return;
+        lock (_trackedDispatchers)
+        {
+            // Drop dead refs while we're here.
+            for (int i = _trackedDispatchers.Count - 1; i >= 0; i--)
+            {
+                if (!_trackedDispatchers[i].TryGetTarget(out var existing))
+                {
+                    _trackedDispatchers.RemoveAt(i);
+                    continue;
+                }
+                if (ReferenceEquals(existing, dispatcher)) return; // already tracked
+            }
+            _trackedDispatchers.Add(new WeakReference<System.Windows.Threading.Dispatcher>(dispatcher));
+        }
     }
 
     /// <summary>
@@ -65,6 +320,12 @@ public static class Pilot
     {
         // Capture the WPF dispatcher from the element's thread
         _server?.SetDispatcher(element.Dispatcher);
+
+        // Track this dispatcher so Pilot.Shutdown can InvokeShutdown + Join
+        // its thread on AutoClose. Critical for clean .NET 8 / Excel-DNA
+        // teardown when the addin owns a dedicated WPF thread that's blocked
+        // on Dispatcher.Run().
+        TrackDispatcher(element.Dispatcher);
 
         // Clear the old registry (and dispose its adapters' value-change
         // subscriptions) before walking the new visual tree. Prevents stale

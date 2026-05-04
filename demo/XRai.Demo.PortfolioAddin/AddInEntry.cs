@@ -69,11 +69,7 @@ public class AddInEntry : IExcelAddIn
         Pilot.Log("Portfolio add-in loaded");
     }
 
-    public void AutoClose()
-    {
-        try { _window?.Dispatcher.InvokeShutdown(); } catch { }
-        Pilot.Stop();
-    }
+    public void AutoClose() => Pilot.Shutdown();
 
     public static PortfolioViewModel? ViewModel => _viewModel;
 }
